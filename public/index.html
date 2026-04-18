@@ -363,6 +363,7 @@ tbody tr:hover{background:#f5f8fc;}
           <button class="active" data-mode="kanban">Kanban</button>
           <button data-mode="table">Table</button>
           <button data-mode="renewals">Renewals</button>
+          <button data-mode="programmatic">Programmatic</button>
         </div>
         <button class="btn-secondary" onclick="openImportModal()">&#128229; Import Deals</button>
         <button class="btn-primary" onclick="openNewDealModal()">+ New Deal</button>
@@ -382,6 +383,20 @@ tbody tr:hover{background:#f5f8fc;}
     <div id="pipeline-table" style="display:none;"><div class="table-wrap"><table><thead><tr>
       <th>Opportunity</th><th>Advertiser</th><th>Market</th><th>Rep</th><th>Type</th><th>Tier</th><th>Stage</th><th style="text-align:right">Amount</th><th style="text-align:right">Weighted</th><th>Age</th><th>Days@Stage</th><th>Next Action</th>
     </tr></thead><tbody id="pipeline-tbody"></tbody></table></div></div>
+    <div id="pipeline-programmatic" style="display:none;">
+      <div class="kpi-row" id="prog-kpis"></div>
+      <div class="chart-grid">
+        <div class="chart-card"><h3>Programmatic Revenue Trend (last 6 months)</h3><div id="prog-trend-chart"></div></div>
+        <div class="chart-card"><h3>Sell-Through Rate by PMP</h3><div id="prog-sellthrough-chart"></div></div>
+      </div>
+      <div class="section-header" style="margin-top:14px;"><h2 style="font-size:16px;">PMP Deals (Tier 3)</h2></div>
+      <div class="table-wrap"><table><thead><tr>
+        <th>PMP / Opportunity</th><th>Advertiser</th><th>Platform</th><th>Status</th>
+        <th style="text-align:right">CPM Floor</th><th style="text-align:right">CPM Actual</th>
+        <th style="text-align:right">Imps Target</th><th style="text-align:right">Imps Delivered</th>
+        <th style="text-align:right">Sell-Through</th><th style="text-align:right">Pacing</th><th style="text-align:right">Revenue</th>
+      </tr></thead><tbody id="prog-tbody"></tbody></table></div>
+    </div>
     <div id="pipeline-renewals" style="display:none;">
       <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px;">
         <div style="font-size:13px;color:#666;">Showing deals expiring within</div>
@@ -752,7 +767,10 @@ function initUI() {
       document.getElementById('pipeline-table').style.display = pipelineMode==='table'?'block':'none';
       const ren = document.getElementById('pipeline-renewals');
       if (ren) ren.style.display = pipelineMode==='renewals'?'block':'none';
+      const pg = document.getElementById('pipeline-programmatic');
+      if (pg) pg.style.display = pipelineMode==='programmatic'?'block':'none';
       if (pipelineMode==='renewals') renderRenewals();
+      if (pipelineMode==='programmatic') renderProgrammatic();
     });
   });
 
@@ -854,6 +872,7 @@ function renderDashboard() {
     <div class="kpi purple"><div class="kpi-label">Won This Quarter</div><div class="kpi-value">${won.length}</div><div class="kpi-sub">${fmt(won.reduce((s,d)=>s+(d.amount||0),0))}</div></div>
     <div class="kpi ${lost.length>0?'red':'green'}"><div class="kpi-label">Lost This Quarter</div><div class="kpi-value">${lost.length}</div><div class="kpi-sub">${fmt(lost.reduce((s,d)=>s+(d.amount||0),0))}</div></div>
     <div class="kpi teal"><div class="kpi-label">Linear / Digital Ratio</div><div class="kpi-value">${ratioLabel}</div><div class="kpi-sub">${fmtK(platTotals.linear)} L · ${fmtK(platTotals.digital)} D</div></div>
+    <div class="kpi" style="border-left-color:#E65100"><div class="kpi-label">Programmatic Pipeline</div><div class="kpi-value">${fmtK(active.filter(d=>d.tier===3).reduce((s,d)=>s+(d.amount||0),0))}</div><div class="kpi-sub">${active.filter(d=>d.tier===3).length} active Tier 3 deals</div></div>
     <div class="kpi orange"><div class="kpi-label">Expiring in 90 Days</div><div class="kpi-value">${expiring90.length}</div><div class="kpi-sub">${tier1Expiring.length>0?'<span style="color:#F44336;font-weight:700;">'+tier1Expiring.length+' Tier 1</span>':'No Tier 1 at risk'}</div></div>
     <div class="kpi ${expiring30.length>0?'red':'green'}"><div class="kpi-label">Expiring in 30 Days</div><div class="kpi-value" style="${expiring30.length>0?'color:#F44336':''}">${expiring30.length}</div><div class="kpi-sub">${expiring30.length>0?'Action needed':'Nothing urgent'}</div></div>
   `;
@@ -998,6 +1017,80 @@ function renderRenewals() {
           <td><button class="btn-secondary" style="font-size:11px;padding:4px 10px;" onclick="event.stopPropagation();createRenewal('${d.id}')">Create Renewal</button></td>
         </tr>`;
       }).join('');
+}
+
+function renderProgrammatic() {
+  const tier3 = DEALS.filter(d => d.tier === 3);
+  const active = tier3.filter(d => (d.programmatic_status || (d.stage!=='Closed Lost' && d.stage!=='Closed Won' ? 'Active' : 'Ended')) === 'Active');
+  const monthlyRev = tier3.filter(d => d.stage === 'Closed Won').reduce((s,d)=>s+(d.amount||0),0);
+  const cpmActuals = tier3.map(d=>Number(d.cpm_actual)).filter(v=>!isNaN(v)&&v>0);
+  const cpmFloors = tier3.map(d=>Number(d.cpm_floor)).filter(v=>!isNaN(v)&&v>0);
+  const avgCpmActual = cpmActuals.length ? Math.round(cpmActuals.reduce((a,b)=>a+b,0)/cpmActuals.length*100)/100 : 0;
+  const avgCpmFloor = cpmFloors.length ? Math.round(cpmFloors.reduce((a,b)=>a+b,0)/cpmFloors.length*100)/100 : 0;
+  const totalTarget = tier3.reduce((s,d)=>s+(Number(d.impressions_target)||0),0);
+  const totalDelivered = tier3.reduce((s,d)=>s+(Number(d.impressions_delivered)||0),0);
+  const sellThrough = totalTarget>0 ? Math.round(totalDelivered/totalTarget*100) : 0;
+  document.getElementById('prog-kpis').innerHTML = `
+    <div class="kpi blue"><div class="kpi-label">Active PMPs</div><div class="kpi-value">${active.length}</div><div class="kpi-sub">${tier3.length} total Tier 3</div></div>
+    <div class="kpi teal"><div class="kpi-label">Avg CPM</div><div class="kpi-value">$${avgCpmActual||'—'}</div><div class="kpi-sub">Floor avg: $${avgCpmFloor||'—'}</div></div>
+    <div class="kpi green"><div class="kpi-label">Programmatic Revenue</div><div class="kpi-value">${fmtK(monthlyRev)}</div><div class="kpi-sub">From Closed Won Tier 3</div></div>
+    <div class="kpi ${sellThrough>=80?'green':sellThrough>=50?'orange':'red'}"><div class="kpi-label">Sell-Through</div><div class="kpi-value">${sellThrough}%</div><div class="kpi-sub">${(totalDelivered/1e6).toFixed(1)}M / ${(totalTarget/1e6).toFixed(1)}M imps</div></div>
+    <div class="kpi purple"><div class="kpi-label">Avg Deal Size</div><div class="kpi-value">${fmtK(tier3.length?tier3.reduce((s,d)=>s+(d.amount||0),0)/tier3.length:0)}</div><div class="kpi-sub">Across all Tier 3</div></div>
+  `;
+  // Trend: last 6 months from Closed Won Tier 3 grouped by updated_at month
+  const monthly = {};
+  tier3.filter(d=>d.stage==='Closed Won').forEach(d => {
+    const m = (d.updated_at||d.created_at||'').slice(0,7);
+    if (m) monthly[m] = (monthly[m]||0) + (d.amount||0);
+  });
+  const months = Object.keys(monthly).sort().slice(-6);
+  const max = Math.max(1, ...months.map(m=>monthly[m]));
+  document.getElementById('prog-trend-chart').innerHTML = months.length===0
+    ? '<div style="text-align:center;padding:24px;color:#888;">No closed Tier 3 deals yet</div>'
+    : months.map(m=>{
+        const v = monthly[m];
+        return `<div class="bar-row"><span class="bar-label" style="width:90px;font-size:12px;color:#555;">${m}</span><div class="bar-track"><div class="bar-fill" style="width:${Math.max(v/max*100,2)}%;background:#E65100">${fmtK(v)}</div></div></div>`;
+      }).join('');
+  // Sell-through bars per PMP
+  const pmpData = tier3.filter(d=>d.impressions_target).map(d=>{
+    const st = d.impressions_target>0 ? Math.round((d.impressions_delivered||0)/d.impressions_target*100) : 0;
+    return { label: d.pmp_name||d.opportunity_name, value: st, color: st>=80?'#4CAF50':st>=50?'#FF9800':'#F44336' };
+  }).sort((a,b)=>b.value-a.value).slice(0,10);
+  document.getElementById('prog-sellthrough-chart').innerHTML = pmpData.length===0
+    ? '<div style="text-align:center;padding:24px;color:#888;">No PMPs with impression targets set</div>'
+    : pmpData.map(p=>`<div class="bar-row"><span class="bar-label" style="width:120px;font-size:11px;color:#555;">${p.label}</span><div class="bar-track"><div class="bar-fill" style="width:${Math.max(p.value,2)}%;background:${p.color}">${p.value}%</div></div></div>`).join('');
+  // Table
+  const tbody = document.getElementById('prog-tbody');
+  if (tbody) {
+    tbody.innerHTML = tier3.length === 0
+      ? '<tr><td colspan="11" style="text-align:center;padding:24px;color:#888;">No Tier 3 (Programmatic) deals yet — run migration 005_programmatic.sql in Supabase, then add PMP-specific data via Edit Deal.</td></tr>'
+      : tier3.map(d => {
+          const st = d.impressions_target>0 ? Math.round((d.impressions_delivered||0)/d.impressions_target*100) : null;
+          const stColor = st===null?'#888':st>=80?'#4CAF50':st>=50?'#FF9800':'#F44336';
+          // Pacing: % of expected at this point in the flight
+          let pacing = null;
+          if (d.fiscal_start && d.fiscal_end && d.impressions_target > 0) {
+            const total = daysBetween(d.fiscal_start, d.fiscal_end);
+            const elapsed = Math.max(0, daysBetween(d.fiscal_start, today));
+            const expected = total>0 ? Math.min(elapsed/total, 1) * d.impressions_target : 0;
+            pacing = expected>0 ? Math.round((d.impressions_delivered||0)/expected*100) : null;
+          }
+          const pacingColor = pacing===null?'#888':pacing>=95?'#4CAF50':pacing>=70?'#FF9800':'#F44336';
+          return `<tr onclick="showDetail('${d.id}')" style="cursor:pointer;">
+            <td><strong>${d.pmp_name||d.opportunity_name}</strong></td>
+            <td>${d.advertiser_child||''}</td>
+            <td>${d.platform_mix||''}</td>
+            <td>${d.programmatic_status?'<span class="stage-badge stage-'+d.programmatic_status.toLowerCase()+'" style="background:'+(d.programmatic_status==='Active'?'#C8E6C9':d.programmatic_status==='Paused'?'#FFE0B2':'#ECEFF1')+';color:'+(d.programmatic_status==='Active'?'#1B5E20':d.programmatic_status==='Paused'?'#E65100':'#37474F')+';">'+d.programmatic_status+'</span>':'<span style="color:#888;font-size:11px;">—</span>'}</td>
+            <td class="amount">${d.cpm_floor?'$'+d.cpm_floor:'—'}</td>
+            <td class="amount">${d.cpm_actual?'$'+d.cpm_actual:'—'}</td>
+            <td class="amount">${d.impressions_target?(d.impressions_target/1e6).toFixed(2)+'M':'—'}</td>
+            <td class="amount">${d.impressions_delivered?(d.impressions_delivered/1e6).toFixed(2)+'M':'—'}</td>
+            <td class="amount" style="color:${stColor};font-weight:700;">${st===null?'—':st+'%'}</td>
+            <td class="amount" style="color:${pacingColor};font-weight:700;">${pacing===null?'—':pacing+'%'}</td>
+            <td class="amount">${fmt(d.amount)}</td>
+          </tr>`;
+        }).join('');
+  }
 }
 
 function createRenewal(dealId) {
