@@ -222,6 +222,17 @@ tbody tr:hover{background:#f5f8fc;}
 .modal-footer{padding:16px 24px;border-top:1px solid #f0f0f0;display:flex;justify-content:flex-end;gap:10px;}
 .name-suggestion{background:#E3F2FD;color:#1565C0;padding:6px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;margin-top:4px;display:none;}
 .name-suggestion:hover{background:#BBDEFB;}
+/* Advertiser autocomplete */
+.autocomplete-wrap{position:relative;}
+.autocomplete-list{position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid #ddd;border-top:none;border-radius:0 0 8px 8px;max-height:220px;overflow-y:auto;z-index:3000;box-shadow:0 8px 24px rgba(0,0,0,0.12);display:none;}
+.autocomplete-list.open{display:block;}
+.autocomplete-item{padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid #f5f5f5;transition:background 0.1s;}
+.autocomplete-item:hover,.autocomplete-item.active{background:#f5f8fc;}
+.autocomplete-item .ac-name{font-weight:600;color:#1B3A5C;}
+.autocomplete-item .ac-meta{font-size:11px;color:#888;margin-top:1px;}
+.autocomplete-item .ac-spend{float:right;font-size:11px;font-weight:600;color:#4CAF50;}
+.autocomplete-clear{position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;font-size:16px;color:#bbb;cursor:pointer;line-height:1;padding:2px 4px;}
+.autocomplete-clear:hover{color:#666;}
 
 /* ===== REP CARDS ===== */
 .rep-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;margin-bottom:24px;}
@@ -315,6 +326,7 @@ tbody tr:hover{background:#f5f8fc;}
       <div class="chart-card"><h3>Pipeline by Tier</h3><div id="dash-tier-donut"></div></div>
       <div class="chart-card"><h3>Pipeline by Market</h3><div id="dash-market-chart"></div></div>
       <div class="chart-card"><h3>Monthly Revenue Outlook</h3><div id="dash-monthly-chart"></div></div>
+      <div class="chart-card full-width"><h3>Linear vs Digital Revenue (Booked Actuals)</h3><div id="dash-platform-chart"></div></div>
     </div>
     <div class="chart-grid">
       <div class="chart-card"><h3>Top 5 Deals</h3><div class="table-wrap" style="box-shadow:none;"><table><thead><tr><th>Deal</th><th>Rep</th><th>Stage</th><th style="text-align:right">Amount</th></tr></thead><tbody id="dash-top-deals"></tbody></table></div></div>
@@ -341,6 +353,7 @@ tbody tr:hover{background:#f5f8fc;}
       <div class="filter-group"><label>Market</label><select id="f-market"><option value="">All Markets</option><option value="Brazil">Brazil</option><option value="Mexico">Mexico</option><option value="Argentina">Argentina</option><option value="Colombia">Colombia</option></select></div>
       <div class="filter-group"><label>Rep</label><select id="f-rep"><option value="">All Reps</option></select></div>
       <div class="filter-group"><label>Type</label><select id="f-type"><option value="">All Types</option><option value="Spots">Spots</option><option value="Sponsorship">Sponsorship</option></select></div>
+      <div class="filter-group"><label>Platform</label><select id="f-platform"><option value="">All Platforms</option><option value="Linear">Linear</option><option value="Digital">Digital</option></select></div>
       <div class="filter-group"><label>Business</label><select id="f-biz"><option value="">All</option><option value="New">New</option><option value="Existing">Existing</option></select></div>
       <button class="filter-clear" onclick="clearFilters()">Clear All</button>
     </div>
@@ -353,6 +366,9 @@ tbody tr:hover{background:#f5f8fc;}
   <!-- FORECAST -->
   <div id="forecast" class="view">
     <div class="section-header"><h2>Revenue Forecast</h2></div>
+    <div class="filters">
+      <div class="filter-group"><label>Platform</label><select id="f-fc-platform"><option value="">All Platforms</option><option value="Linear">Linear</option><option value="Digital">Digital</option></select></div>
+    </div>
     <div class="kpi-row" id="forecast-kpis"></div>
     <div class="chart-grid"><div class="chart-card full-width"><h3>Monthly Forecast vs Actuals</h3><div id="fc-monthly-chart"></div></div></div>
     <div class="chart-grid">
@@ -419,7 +435,42 @@ tbody tr:hover{background:#f5f8fc;}
 let sb; // Supabase client
 let currentUser = null;
 let DEALS = [], FORECASTS = [], ACTUALS = [], ACTIVITIES = [], ADVERTISERS = [], STAGES = [];
-let filterState = { stage:'', tier:'', market:'', rep:'', type:'', biz:'' };
+let filterState = { stage:'', tier:'', market:'', rep:'', type:'', biz:'', platform:'' };
+let forecastPlatformFilter = '';
+
+// ===== PLATFORM HELPERS =====
+const PLATFORM_COLORS = { Linear: '#1565C0', Digital: '#E65100' };
+function dealMatchesPlatform(d, platform) {
+  if (!platform) return true;
+  const mix = String(d.platform_mix || '').toLowerCase();
+  return mix.includes(platform.toLowerCase());
+}
+function actualsByPlatform(platform) {
+  if (!platform) return ACTUALS;
+  return ACTUALS.filter(a => (a.platform || '') === platform);
+}
+function aggActualsByMonthPlatform(actuals) {
+  // Returns { month: { Linear, Digital, total } }
+  const out = {};
+  actuals.forEach(a => {
+    if (!a.month) return;
+    if (!out[a.month]) out[a.month] = { Linear: 0, Digital: 0, total: 0 };
+    const amt = Number(a.booked_revenue) || 0;
+    if (a.platform === 'Linear') out[a.month].Linear += amt;
+    else if (a.platform === 'Digital') out[a.month].Digital += amt;
+    out[a.month].total += amt;
+  });
+  return out;
+}
+function totalsByPlatform(actuals) {
+  let linear = 0, digital = 0;
+  actuals.forEach(a => {
+    const amt = Number(a.booked_revenue) || 0;
+    if (a.platform === 'Linear') linear += amt;
+    else if (a.platform === 'Digital') digital += amt;
+  });
+  return { linear, digital, total: linear + digital };
+}
 let pipelineMode = 'kanban';
 
 const STAGE_ORDER = ['Initial Contact','Negotiation','Close to Close','Closed (No Order Yet)','Closed Won','Closed Lost'];
@@ -565,7 +616,7 @@ function initUI() {
   STAGE_ORDER.forEach(s => { const o=document.createElement('option'); o.value=s; o.textContent=s; fStage.appendChild(o); });
 
   // Filter listeners
-  ['f-stage','f-tier','f-market','f-rep','f-type','f-biz'].forEach(id => {
+  ['f-stage','f-tier','f-market','f-rep','f-type','f-biz','f-platform'].forEach(id => {
     document.getElementById(id).addEventListener('change', () => {
       filterState.stage = document.getElementById('f-stage').value;
       filterState.tier = document.getElementById('f-tier').value;
@@ -573,8 +624,13 @@ function initUI() {
       filterState.rep = document.getElementById('f-rep').value;
       filterState.type = document.getElementById('f-type').value;
       filterState.biz = document.getElementById('f-biz').value;
+      filterState.platform = document.getElementById('f-platform').value;
       renderPipeline();
     });
+  });
+  document.getElementById('f-fc-platform').addEventListener('change', () => {
+    forecastPlatformFilter = document.getElementById('f-fc-platform').value;
+    renderForecast();
   });
   ['f-act-rep','f-act-type','f-act-deal'].forEach(id => {
     document.getElementById(id).addEventListener('change', renderActivity);
@@ -648,7 +704,7 @@ function populateSelect(id, options) {
 }
 
 function clearFilters() {
-  filterState = { stage:'', tier:'', market:'', rep:'', type:'', biz:'' };
+  filterState = { stage:'', tier:'', market:'', rep:'', type:'', biz:'', platform:'' };
   document.querySelectorAll('#pipeline-filters select').forEach(s => s.value='');
   renderPipeline();
 }
@@ -676,6 +732,14 @@ function renderDashboard() {
   FORECASTS.forEach(f=>{ if(f.actual_amount!=null){ fcTotal+=f.forecast_amount||0; actTotal+=f.actual_amount; }});
   const accuracy = fcTotal>0 ? Math.round(actTotal/fcTotal*100) : 0;
 
+  // Linear vs Digital revenue from booked actuals (used in KPI + chart)
+  const platTotals = totalsByPlatform(ACTUALS);
+  const linearPct = platTotals.total > 0 ? Math.round(platTotals.linear / platTotals.total * 100) : 0;
+  const digitalPct = platTotals.total > 0 ? 100 - linearPct : 0;
+  const ratioLabel = platTotals.total > 0
+    ? `${linearPct}% / ${digitalPct}%`
+    : '— / —';
+
   document.getElementById('dash-kpis').innerHTML = `
     <div class="kpi blue"><div class="kpi-label">Total Pipeline</div><div class="kpi-value">${fmtK(totalPipeline)}</div><div class="kpi-sub">${active.length} active deals</div></div>
     <div class="kpi green"><div class="kpi-label">Weighted Pipeline</div><div class="kpi-value">${fmtK(weightedPipeline)}</div><div class="kpi-sub">Confidence-adjusted</div></div>
@@ -683,6 +747,7 @@ function renderDashboard() {
     <div class="kpi ${stalledCount>0?'orange':'green'}"><div class="kpi-label">Stalled Deals</div><div class="kpi-value">${stalledCount}</div><div class="kpi-sub">${stalledCount>0?'Needs attention':'All on track'}</div></div>
     <div class="kpi purple"><div class="kpi-label">Won This Quarter</div><div class="kpi-value">${won.length}</div><div class="kpi-sub">${fmt(won.reduce((s,d)=>s+(d.amount||0),0))}</div></div>
     <div class="kpi ${lost.length>0?'red':'green'}"><div class="kpi-label">Lost This Quarter</div><div class="kpi-value">${lost.length}</div><div class="kpi-sub">${fmt(lost.reduce((s,d)=>s+(d.amount||0),0))}</div></div>
+    <div class="kpi teal"><div class="kpi-label">Linear / Digital Ratio</div><div class="kpi-value">${ratioLabel}</div><div class="kpi-sub">${fmtK(platTotals.linear)} L · ${fmtK(platTotals.digital)} D</div></div>
   `;
 
   // Stage chart
@@ -709,6 +774,27 @@ function renderDashboard() {
       <div class="bar-row" style="margin-bottom:2px;"><span class="bar-label" style="width:80px;font-size:11px;color:#888;">Forecast</span><div class="bar-track" style="height:22px;"><div class="bar-fill" style="width:${Math.max(d.fc/maxM*100,2)}%;background:#1B3A5C;font-size:10px;">${fmtK(d.fc)}</div></div></div>
       ${d.hasAct?`<div class="bar-row"><span class="bar-label" style="width:80px;font-size:11px;color:#888;">Actual</span><div class="bar-track" style="height:22px;"><div class="bar-fill" style="width:${Math.max(d.act/maxM*100,2)}%;background:${d.act>=d.fc?'#4CAF50':'#F44336'};font-size:10px;">${fmtK(d.act)}</div></div></div>`:''}</div>`;
   }).join('');
+
+  // Linear vs Digital monthly bar chart (booked actuals)
+  const platByMonth = aggActualsByMonthPlatform(ACTUALS);
+  const platMonths = Object.keys(platByMonth).sort();
+  const platMaxVal = Math.max(1, ...platMonths.map(m => Math.max(platByMonth[m].Linear, platByMonth[m].Digital)));
+  const platChartEl = document.getElementById('dash-platform-chart');
+  if (platMonths.length === 0) {
+    platChartEl.innerHTML = '<div style="text-align:center;padding:24px;color:#888;font-size:13px;">No revenue actuals available</div>';
+  } else {
+    platChartEl.innerHTML =
+      `<div style="display:flex;gap:14px;font-size:11px;font-weight:600;color:#555;margin-bottom:10px;">
+        <span><span style="display:inline-block;width:10px;height:10px;background:${PLATFORM_COLORS.Linear};border-radius:2px;margin-right:5px;vertical-align:middle;"></span>Linear</span>
+        <span><span style="display:inline-block;width:10px;height:10px;background:${PLATFORM_COLORS.Digital};border-radius:2px;margin-right:5px;vertical-align:middle;"></span>Digital</span>
+      </div>` +
+      platMonths.map(m => {
+        const row = platByMonth[m];
+        return `<div style="margin-bottom:10px;"><div style="font-size:12px;font-weight:700;color:#1B3A5C;margin-bottom:3px;">${m}</div>
+          <div class="bar-row" style="margin-bottom:2px;"><span class="bar-label" style="width:70px;font-size:11px;color:#888;">Linear</span><div class="bar-track" style="height:20px;"><div class="bar-fill" style="width:${Math.max(row.Linear/platMaxVal*100,2)}%;background:${PLATFORM_COLORS.Linear};font-size:10px;">${fmtK(row.Linear)}</div></div></div>
+          <div class="bar-row"><span class="bar-label" style="width:70px;font-size:11px;color:#888;">Digital</span><div class="bar-track" style="height:20px;"><div class="bar-fill" style="width:${Math.max(row.Digital/platMaxVal*100,2)}%;background:${PLATFORM_COLORS.Digital};font-size:10px;">${fmtK(row.Digital)}</div></div></div></div>`;
+      }).join('');
+  }
 
   // Top 5 deals
   const topDeals = [...DEALS].filter(d=>d.stage!=='Closed Lost').sort((a,b)=>(b.amount||0)-(a.amount||0)).slice(0,5);
@@ -743,6 +829,7 @@ function getFilteredDeals() {
     if (filterState.rep && d.sales_rep !== filterState.rep) return false;
     if (filterState.type && d.opportunity_type !== filterState.type) return false;
     if (filterState.biz && d.business_type !== filterState.biz) return false;
+    if (filterState.platform && !dealMatchesPlatform(d, filterState.platform)) return false;
     return true;
   });
 }
@@ -811,44 +898,78 @@ function renderPipelineTable(deals) {
 // FORECAST
 // ===================================================================
 function renderForecast() {
+  // Forecast entries are filtered by linked deal's platform_mix when a platform
+  // filter is active; revenue actuals are filtered directly by the platform field.
+  const platform = forecastPlatformFilter;
+  const filteredForecasts = !platform
+    ? FORECASTS
+    : FORECASTS.filter(f => {
+        const deal = DEALS.find(d => d.id === f.opportunity_id);
+        return deal && dealMatchesPlatform(deal, platform);
+      });
+
   const monthAgg={};
-  FORECASTS.forEach(f=>{ if(!monthAgg[f.month])monthAgg[f.month]={fc:0,act:0,hasAct:false,deals:new Set()}; monthAgg[f.month].fc+=(f.forecast_amount||0); if(f.actual_amount!=null){monthAgg[f.month].act+=f.actual_amount;monthAgg[f.month].hasAct=true;} monthAgg[f.month].deals.add(f.opportunity_id); });
-  const months = Object.keys(monthAgg).sort();
-  const totalFc = months.reduce((s,m)=>s+monthAgg[m].fc,0);
-  const totalAct = months.filter(m=>monthAgg[m].hasAct).reduce((s,m)=>s+monthAgg[m].act,0);
-  const totalFcWithAct = months.filter(m=>monthAgg[m].hasAct).reduce((s,m)=>s+monthAgg[m].fc,0);
+  filteredForecasts.forEach(f=>{ if(!monthAgg[f.month])monthAgg[f.month]={fc:0,act:0,hasAct:false,deals:new Set()}; monthAgg[f.month].fc+=(f.forecast_amount||0); if(f.actual_amount!=null){monthAgg[f.month].act+=f.actual_amount;monthAgg[f.month].hasAct=true;} monthAgg[f.month].deals.add(f.opportunity_id); });
+
+  // Per-month Linear/Digital actuals for the side-by-side bars
+  const platByMonth = aggActualsByMonthPlatform(actualsByPlatform(platform));
+  const allMonthsSet = new Set([...Object.keys(monthAgg), ...Object.keys(platByMonth)]);
+  const months = [...allMonthsSet].sort();
+
+  const totalFc = months.reduce((s,m)=>s+((monthAgg[m]&&monthAgg[m].fc)||0),0);
+  const totalAct = months.filter(m=>monthAgg[m]&&monthAgg[m].hasAct).reduce((s,m)=>s+monthAgg[m].act,0);
+  const totalFcWithAct = months.filter(m=>monthAgg[m]&&monthAgg[m].hasAct).reduce((s,m)=>s+monthAgg[m].fc,0);
   const variance = totalAct - totalFcWithAct;
-  const active = DEALS.filter(d=>d.stage!=='Closed Won'&&d.stage!=='Closed Lost');
+  const active = DEALS.filter(d=>d.stage!=='Closed Won'&&d.stage!=='Closed Lost'&&dealMatchesPlatform(d, platform));
   const weightedP = active.reduce((s,d)=>s+(d.weighted||0),0);
+  const platTotals = totalsByPlatform(actualsByPlatform(platform));
 
   document.getElementById('forecast-kpis').innerHTML = `
-    <div class="kpi blue"><div class="kpi-label">Total Forecast</div><div class="kpi-value">${fmtK(totalFc)}</div><div class="kpi-sub">${months.length} months</div></div>
+    <div class="kpi blue"><div class="kpi-label">Total Forecast${platform?' ('+platform+')':''}</div><div class="kpi-value">${fmtK(totalFc)}</div><div class="kpi-sub">${months.length} months</div></div>
     <div class="kpi green"><div class="kpi-label">Total Actuals</div><div class="kpi-value">${fmtK(totalAct)}</div><div class="kpi-sub">Where available</div></div>
     <div class="kpi ${variance>=0?'green':'red'}"><div class="kpi-label">Variance</div><div class="kpi-value">${(variance>=0?'+':'')+fmtK(variance)}</div><div class="kpi-sub">${totalFcWithAct>0?Math.round(totalAct/totalFcWithAct*100)+'% accuracy':'No actuals yet'}</div></div>
     <div class="kpi purple"><div class="kpi-label">Weighted Pipeline</div><div class="kpi-value">${fmtK(weightedP)}</div><div class="kpi-sub">Confidence-adjusted</div></div>
+    <div class="kpi teal"><div class="kpi-label">Linear vs Digital Booked</div><div class="kpi-value" style="font-size:18px;">${fmtK(platTotals.linear)} · ${fmtK(platTotals.digital)}</div><div class="kpi-sub">${platTotals.total>0?Math.round(platTotals.linear/platTotals.total*100)+'% / '+Math.round(platTotals.digital/platTotals.total*100)+'%':'—'}</div></div>
   `;
 
-  // Monthly dual chart
-  const maxM = Math.max(...months.map(m=>Math.max(monthAgg[m].fc,monthAgg[m].act)),1);
-  document.getElementById('fc-monthly-chart').innerHTML = months.map(m=>{
-    const d=monthAgg[m];
-    return `<div style="margin-bottom:12px;"><div style="font-size:12px;font-weight:700;color:#1B3A5C;margin-bottom:4px;">${m}</div>
-      <div class="bar-row" style="margin-bottom:2px;"><span class="bar-label" style="width:80px;font-size:11px;color:#888;">Forecast</span><div class="bar-track" style="height:22px;"><div class="bar-fill" style="width:${Math.max(d.fc/maxM*100,2)}%;background:#1B3A5C;font-size:10px;">${fmtK(d.fc)}</div></div></div>
-      ${d.hasAct?`<div class="bar-row"><span class="bar-label" style="width:80px;font-size:11px;color:#888;">Actual</span><div class="bar-track" style="height:22px;"><div class="bar-fill" style="width:${Math.max(d.act/maxM*100,2)}%;background:${d.act>=d.fc?'#4CAF50':'#F44336'};font-size:10px;">${fmtK(d.act)}</div></div></div>`:''}</div>`;
-  }).join('');
+  // Monthly chart: Forecast bar plus Linear/Digital actual bars side-by-side
+  const maxM = Math.max(1, ...months.map(m => {
+    const fc = monthAgg[m] ? monthAgg[m].fc : 0;
+    const lin = platByMonth[m] ? platByMonth[m].Linear : 0;
+    const dig = platByMonth[m] ? platByMonth[m].Digital : 0;
+    return Math.max(fc, lin, dig);
+  }));
+  document.getElementById('fc-monthly-chart').innerHTML =
+    `<div style="display:flex;gap:14px;font-size:11px;font-weight:600;color:#555;margin-bottom:10px;">
+      <span><span style="display:inline-block;width:10px;height:10px;background:#1B3A5C;border-radius:2px;margin-right:5px;vertical-align:middle;"></span>Forecast</span>
+      <span><span style="display:inline-block;width:10px;height:10px;background:${PLATFORM_COLORS.Linear};border-radius:2px;margin-right:5px;vertical-align:middle;"></span>Linear Actual</span>
+      <span><span style="display:inline-block;width:10px;height:10px;background:${PLATFORM_COLORS.Digital};border-radius:2px;margin-right:5px;vertical-align:middle;"></span>Digital Actual</span>
+    </div>` +
+    months.map(m => {
+      const f = monthAgg[m] || { fc: 0, hasAct: false, act: 0 };
+      const p = platByMonth[m] || { Linear: 0, Digital: 0 };
+      const showLinear = !platform || platform === 'Linear';
+      const showDigital = !platform || platform === 'Digital';
+      return `<div style="margin-bottom:14px;"><div style="font-size:12px;font-weight:700;color:#1B3A5C;margin-bottom:4px;">${m}</div>
+        <div class="bar-row" style="margin-bottom:2px;"><span class="bar-label" style="width:80px;font-size:11px;color:#888;">Forecast</span><div class="bar-track" style="height:20px;"><div class="bar-fill" style="width:${Math.max(f.fc/maxM*100,2)}%;background:#1B3A5C;font-size:10px;">${fmtK(f.fc)}</div></div></div>
+        ${showLinear?`<div class="bar-row" style="margin-bottom:2px;"><span class="bar-label" style="width:80px;font-size:11px;color:#888;">Linear</span><div class="bar-track" style="height:20px;"><div class="bar-fill" style="width:${Math.max(p.Linear/maxM*100,2)}%;background:${PLATFORM_COLORS.Linear};font-size:10px;">${fmtK(p.Linear)}</div></div></div>`:''}
+        ${showDigital?`<div class="bar-row"><span class="bar-label" style="width:80px;font-size:11px;color:#888;">Digital</span><div class="bar-track" style="height:20px;"><div class="bar-fill" style="width:${Math.max(p.Digital/maxM*100,2)}%;background:${PLATFORM_COLORS.Digital};font-size:10px;">${fmtK(p.Digital)}</div></div></div>`:''}
+      </div>`;
+    }).join('');
 
   // Quarterly
   const qAgg={};
-  months.forEach(m=>{ const [y,mo]=m.split('-'); const q=Math.ceil(parseInt(mo)/3); const qk=y+'-Q'+q; if(!qAgg[qk])qAgg[qk]={fc:0,act:0}; qAgg[qk].fc+=monthAgg[m].fc; if(monthAgg[m].hasAct)qAgg[qk].act+=monthAgg[m].act; });
+  months.forEach(m=>{ const [y,mo]=m.split('-'); const q=Math.ceil(parseInt(mo)/3); const qk=y+'-Q'+q; if(!qAgg[qk])qAgg[qk]={fc:0,act:0}; const ma=monthAgg[m]; if(!ma)return; qAgg[qk].fc+=ma.fc; if(ma.hasAct)qAgg[qk].act+=ma.act; });
   renderBarChart('fc-quarterly', Object.entries(qAgg).sort().map(([k,v])=>({label:k,value:v.fc,color:'#1B3A5C'})));
 
-  // Tier forecast
+  // Tier forecast (respects platform filter)
   const tierFc={1:0,2:0,3:0};
-  FORECASTS.forEach(f=>{ const deal=DEALS.find(d=>d.id===f.opportunity_id); if(deal&&deal.tier) tierFc[deal.tier]+=(f.forecast_amount||0); });
+  filteredForecasts.forEach(f=>{ const deal=DEALS.find(d=>d.id===f.opportunity_id); if(deal&&deal.tier) tierFc[deal.tier]+=(f.forecast_amount||0); });
   renderBarChart('fc-tier-chart',[{label:'Tier 1 — Anchor',value:tierFc[1],color:'#1565C0'},{label:'Tier 2 — Featured',value:tierFc[2],color:'#7B1FA2'},{label:'Tier 3 — Programmatic',value:tierFc[3],color:'#E65100'}]);
 
-  // Detail table
-  document.getElementById('fc-detail-body').innerHTML = months.map(m=>{
+  // Detail table — only rows that have forecast data (skip months that exist
+  // only as actuals, since they have no Forecast/Variance to show)
+  document.getElementById('fc-detail-body').innerHTML = months.filter(m=>monthAgg[m]).map(m=>{
     const d=monthAgg[m]; const v=d.hasAct?d.act-d.fc:null;
     return `<tr><td style="font-weight:700;color:#1B3A5C;">${m}</td><td class="amount">${fmt(d.fc)}</td>
       <td class="amount">${d.hasAct?fmt(d.act):'<span style="color:#bbb">-</span>'}</td>
@@ -856,8 +977,8 @@ function renderForecast() {
       <td>${d.deals.size} deal${d.deals.size!==1?'s':''}</td></tr>`;
   }).join('');
 
-  // Actuals table
-  document.getElementById('fc-actuals-body').innerHTML = ACTUALS.map(a=>`
+  // Actuals table (filtered by platform when set)
+  document.getElementById('fc-actuals-body').innerHTML = actualsByPlatform(platform).map(a=>`
     <tr><td style="font-weight:600;">${a.month}</td><td>${a.market||''}</td><td>${a.platform||''}</td>
       <td><span class="type-badge ${typeClass(a.opportunity_type)}">${a.opportunity_type||''}</span></td>
       <td><span class="tier-badge tier-${a.tier}">${{1:'Anchor',2:'Featured',3:'Programmatic'}[a.tier]||a.tier}</span></td>
@@ -1085,12 +1206,12 @@ function renderDealForm(deal) {
         <div class="form-group"><label>Platform Mix</label><input type="text" id="df-platform" value="${isEdit?deal.platform_mix||'':''}" placeholder="Linear + Digital"></div>
       </div>
       <div class="form-row">
-        <div class="form-group"><label>Advertiser</label><input type="text" id="df-advertiser" value="${isEdit?deal.advertiser_child||'':''}" onkeyup="suggestName()"></div>
-        <div class="form-group"><label>Advertiser Parent</label><input type="text" id="df-adv-parent" value="${isEdit?deal.advertiser_parent||'':''}"></div>
+        <div class="form-group"><label>Advertiser</label><div class="autocomplete-wrap"><input type="text" id="df-advertiser" value="${isEdit?deal.advertiser_child||'':''}" autocomplete="off" oninput="filterAdvertisers()" onkeydown="acKeydown(event)" onfocus="filterAdvertisers()" placeholder="Start typing to search..."><button type="button" class="autocomplete-clear" id="df-adv-clear" onclick="clearAdvertiser()" title="Clear">&times;</button><div class="autocomplete-list" id="adv-autocomplete"></div></div></div>
+        <div class="form-group"><label>Advertiser Parent</label><input type="text" id="df-adv-parent" value="${isEdit?deal.advertiser_parent||'':''}" readonly style="background:#f8f9fa;color:#666;"></div>
       </div>
       <div class="form-row">
-        <div class="form-group"><label>Agency</label><input type="text" id="df-agency" value="${isEdit?deal.agency_child||'':''}"></div>
-        <div class="form-group"><label>Agency Parent</label><input type="text" id="df-agency-parent" value="${isEdit?deal.agency_parent||'':''}"></div>
+        <div class="form-group"><label>Agency</label><input type="text" id="df-agency" value="${isEdit?deal.agency_child||'':''}" readonly style="background:#f8f9fa;color:#666;"></div>
+        <div class="form-group"><label>Agency Parent</label><input type="text" id="df-agency-parent" value="${isEdit?deal.agency_parent||'':''}" readonly style="background:#f8f9fa;color:#666;"></div>
       </div>
       <div class="form-row">
         <div class="form-group"><label>Contact Name</label><input type="text" id="df-contact" value="${isEdit?deal.contact_name||'':''}"></div>
@@ -1134,6 +1255,81 @@ function suggestName() {
     el.style.display = 'block';
   }
 }
+
+/* ===== ADVERTISER AUTOCOMPLETE ===== */
+let acIndex = -1;
+function fmtSpend(v) { return v >= 1000000 ? '$' + (v/1000000).toFixed(1) + 'M' : v >= 1000 ? '$' + (v/1000).toFixed(0) + 'K' : '$' + (v||0); }
+
+function filterAdvertisers() {
+  const input = document.getElementById('df-advertiser');
+  const list = document.getElementById('adv-autocomplete');
+  const q = input.value.toLowerCase().trim();
+  acIndex = -1;
+  if (q.length < 1) { list.classList.remove('open'); return; }
+  const matches = ADVERTISERS.filter(a =>
+    (a.advertiser_child||'').toLowerCase().includes(q) ||
+    (a.advertiser_parent||'').toLowerCase().includes(q) ||
+    (a.agency_child||'').toLowerCase().includes(q) ||
+    (a.holding_company||'').toLowerCase().includes(q)
+  ).slice(0, 15);
+  if (matches.length === 0) {
+    list.innerHTML = '<div style="padding:10px 12px;color:#888;font-size:12px;font-style:italic;">No matches — you can type a new name</div>';
+    list.classList.add('open');
+    return;
+  }
+  list.innerHTML = matches.map((a, i) =>
+    `<div class="autocomplete-item" data-idx="${i}" onmousedown="selectAdvertiser(${ADVERTISERS.indexOf(a)})">
+      <span class="ac-spend">${fmtSpend(a.historical_annual_spend)}</span>
+      <div class="ac-name">${a.advertiser_child}</div>
+      <div class="ac-meta">${a.agency_child||'No agency'} · ${a.holding_company||'Independent'}</div>
+    </div>`
+  ).join('');
+  list.classList.add('open');
+  suggestName();
+}
+
+function selectAdvertiser(idx) {
+  const a = ADVERTISERS[idx];
+  document.getElementById('df-advertiser').value = a.advertiser_child || '';
+  document.getElementById('df-adv-parent').value = a.advertiser_parent || '';
+  document.getElementById('df-agency').value = a.agency_child || '';
+  document.getElementById('df-agency-parent').value = a.agency_parent || '';
+  const catEl = document.getElementById('df-category');
+  if (catEl && !catEl.value && a.category) catEl.value = a.category;
+  document.getElementById('adv-autocomplete').classList.remove('open');
+  suggestName();
+}
+
+function clearAdvertiser() {
+  document.getElementById('df-advertiser').value = '';
+  document.getElementById('df-adv-parent').value = '';
+  document.getElementById('df-agency').value = '';
+  document.getElementById('df-agency-parent').value = '';
+  document.getElementById('adv-autocomplete').classList.remove('open');
+  suggestName();
+}
+
+function acKeydown(e) {
+  const list = document.getElementById('adv-autocomplete');
+  const items = list.querySelectorAll('.autocomplete-item');
+  if (!list.classList.contains('open') || items.length === 0) return;
+  if (e.key === 'ArrowDown') { e.preventDefault(); acIndex = Math.min(acIndex + 1, items.length - 1); acHighlight(items); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); acIndex = Math.max(acIndex - 1, 0); acHighlight(items); }
+  else if (e.key === 'Enter' && acIndex >= 0) { e.preventDefault(); items[acIndex].dispatchEvent(new Event('mousedown')); }
+  else if (e.key === 'Escape') { list.classList.remove('open'); }
+}
+
+function acHighlight(items) {
+  items.forEach((el, i) => el.classList.toggle('active', i === acIndex));
+  if (items[acIndex]) items[acIndex].scrollIntoView({ block: 'nearest' });
+}
+
+// Close autocomplete when clicking outside
+document.addEventListener('click', function(e) {
+  const wrap = document.querySelector('.autocomplete-wrap');
+  const list = document.getElementById('adv-autocomplete');
+  if (list && wrap && !wrap.contains(e.target)) list.classList.remove('open');
+});
 
 async function saveDeal(id) {
   const name = document.getElementById('df-name').value.trim();
