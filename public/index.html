@@ -345,6 +345,7 @@ tbody tr:hover{background:#f5f8fc;}
           <button class="active" data-mode="kanban">Kanban</button>
           <button data-mode="table">Table</button>
         </div>
+        <button class="btn-secondary" onclick="openImportModal()">&#128229; Import Deals</button>
         <button class="btn-primary" onclick="openNewDealModal()">+ New Deal</button>
       </div>
     </div>
@@ -467,6 +468,9 @@ tbody tr:hover{background:#f5f8fc;}
 
 <!-- ADVERTISER FORM MODAL -->
 <div class="modal-overlay" id="advertiser-modal"><div class="modal" id="advertiser-modal-content"></div></div>
+
+<!-- IMPORT MODAL -->
+<div class="modal-overlay" id="import-modal"><div class="modal" id="import-modal-content" style="width:920px;max-width:96vw;"></div></div>
 
 <!-- TOAST -->
 <div class="toast" id="toast"></div>
@@ -733,8 +737,9 @@ function initUI() {
   searchInput.addEventListener('blur', ()=>{ setTimeout(()=>searchResults.classList.remove('open'),200); });
 
   // Modal close on overlay click
-  ['deal-modal','activity-modal','advertiser-modal'].forEach(id=>{
-    document.getElementById(id).addEventListener('click', function(e){ if(e.target===this) this.classList.remove('open'); });
+  ['deal-modal','activity-modal','advertiser-modal','import-modal'].forEach(id=>{
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('click', function(e){ if(e.target===this) this.classList.remove('open'); });
   });
   document.getElementById('detail-overlay').addEventListener('click', function(e){ if(e.target===this) closeDetail(); });
 
@@ -1720,6 +1725,249 @@ async function saveAdvertiser() {
   document.getElementById('advertiser-modal').classList.remove('open');
   showToast('Advertiser added');
   await loadAllData(); renderClients();
+}
+
+// ===================================================================
+// CSV DEAL IMPORT
+// ===================================================================
+const IMPORT_FIELDS = [
+  { key:'opportunity_name', label:'Opportunity Name', required:true },
+  { key:'market', label:'Market', required:true },
+  { key:'sales_rep', label:'Sales Rep' },
+  { key:'opportunity_type', label:'Opportunity Type' },
+  { key:'business_type', label:'Business Type' },
+  { key:'amount', label:'Amount', required:true },
+  { key:'stage', label:'Stage', required:true },
+  { key:'advertiser_child', label:'Advertiser' },
+  { key:'advertiser_parent', label:'Advertiser Parent' },
+  { key:'agency_child', label:'Agency' },
+  { key:'agency_parent', label:'Agency Parent' },
+  { key:'contact_name', label:'Contact Name' },
+  { key:'category', label:'Category' },
+  { key:'platform_mix', label:'Platform Mix' },
+  { key:'currency', label:'Currency' },
+  { key:'client_deadline', label:'Client Deadline' },
+  { key:'proposal_deadline', label:'Proposal Deadline' },
+  { key:'fiscal_start', label:'Flight Start' },
+  { key:'fiscal_end', label:'Flight End' },
+  { key:'next_action', label:'Next Action' },
+  { key:'next_action_date', label:'Next Action Date' },
+  { key:'notes', label:'Notes' }
+];
+let importParsed = { headers:[], rows:[], mapping:{} };
+
+function openImportModal() {
+  importParsed = { headers:[], rows:[], mapping:{} };
+  renderImportModalShell();
+  document.getElementById('import-modal').classList.add('open');
+}
+
+function renderImportModalShell() {
+  document.getElementById('import-modal-content').innerHTML = `
+    <div class="modal-header">
+      <h2>Import Deals from CSV</h2>
+      <button class="modal-close" onclick="document.getElementById('import-modal').classList.remove('open')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+        <div style="font-size:13px;color:#666;">Paste CSV/TSV data <strong>or</strong> upload a .csv file. First row should be headers.</div>
+        <a href="#" onclick="event.preventDefault();downloadImportTemplate()" style="font-size:13px;font-weight:600;">&#11015; Download Template</a>
+      </div>
+      <div class="form-row">
+        <div class="form-group full">
+          <label>Paste CSV or TSV</label>
+          <textarea id="imp-textarea" rows="6" style="font-family:monospace;font-size:12px;" placeholder="opportunity_name,market,sales_rep,amount,stage&#10;BRA COCA COLA 2026 SPONSORSHIP,Brazil,Maria Santos,450000,Negotiation"></textarea>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Or upload a .csv file</label>
+          <input type="file" id="imp-file" accept=".csv,.tsv,.txt" onchange="readImportFile(event)">
+        </div>
+        <div class="form-group" style="justify-content:flex-end;align-items:flex-end;flex-direction:row;gap:8px;">
+          <button class="btn-secondary" onclick="document.getElementById('imp-textarea').value='';document.getElementById('imp-file').value='';renderImportPreview([],[])">Clear</button>
+          <button class="btn-primary" onclick="parseImportText()">Parse</button>
+        </div>
+      </div>
+      <div id="imp-preview"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="document.getElementById('import-modal').classList.remove('open')">Cancel</button>
+      <button class="btn-primary" id="imp-go-btn" onclick="executeImport()" disabled>Import Deals</button>
+    </div>
+  `;
+}
+
+function downloadImportTemplate() {
+  const headers = ['opportunity_name','market','sales_rep','opportunity_type','business_type','amount','stage','advertiser_child','agency_child','category','platform_mix','currency','fiscal_start','fiscal_end','next_action','next_action_date','notes'];
+  const example1 = ['BRA COCA COLA 2026 SPONSORSHIP THE VOICE','Brazil','Maria Santos','Sponsorship','Existing','450000','Negotiation','Coca-Cola','Mediabrands','Beverages','Linear + Digital','USD','2026-04-01','2026-09-30','Send proposal','2026-04-15','Anchor sponsor for Q2/Q3 flight'];
+  const example2 = ['MEX BBVA 2026 SPOTS','Mexico','Carlos Mendez','Spots','New','85000','Initial Contact','BBVA','GroupM','Finance','Linear','USD','2026-05-01','2026-07-31','Discovery call','2026-04-22',''];
+  const csv = [headers, example1, example2].map(r => r.map(v => /[",\n]/.test(String(v)) ? '"'+String(v).replace(/"/g,'""')+'"' : String(v)).join(',')).join('\n');
+  const blob = new Blob([csv], { type:'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'deal_import_template.csv'; a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function readImportFile(e) {
+  const file = e.target.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => { document.getElementById('imp-textarea').value = ev.target.result; parseImportText(); };
+  reader.readAsText(file);
+}
+
+function parseCSVLine(line, sep) {
+  // Handles quoted fields and embedded separators
+  const out = []; let cur=''; let inQ=false;
+  for (let i=0; i<line.length; i++) {
+    const c = line[i];
+    if (inQ) {
+      if (c === '"' && line[i+1] === '"') { cur += '"'; i++; }
+      else if (c === '"') inQ = false;
+      else cur += c;
+    } else {
+      if (c === '"') inQ = true;
+      else if (c === sep) { out.push(cur); cur=''; }
+      else cur += c;
+    }
+  }
+  out.push(cur);
+  return out.map(s => s.trim());
+}
+
+function parseImportText() {
+  const text = document.getElementById('imp-textarea').value.trim();
+  if (!text) { renderImportPreview([],[]); return; }
+  // Detect separator: tab beats comma if present
+  const firstLine = text.split(/\r?\n/)[0];
+  const sep = firstLine.includes('\t') ? '\t' : ',';
+  const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
+  if (lines.length < 1) return;
+  const headers = parseCSVLine(lines[0], sep);
+  const rows = lines.slice(1).map(l => parseCSVLine(l, sep));
+  // Auto-mapping: match headers by lowercase/normalized name
+  const norm = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+  const mapping = {};
+  headers.forEach(h => {
+    const n = norm(h);
+    const match = IMPORT_FIELDS.find(f => norm(f.key) === n || norm(f.label) === n);
+    mapping[h] = match ? match.key : '';
+  });
+  importParsed = { headers, rows, mapping };
+  renderImportPreview(headers, rows);
+}
+
+function renderImportPreview(headers, rows) {
+  const el = document.getElementById('imp-preview');
+  if (!el) return;
+  if (!headers.length) { el.innerHTML = ''; document.getElementById('imp-go-btn').disabled = true; return; }
+  const previewRows = rows.slice(0, 5);
+  const validation = validateImport();
+  document.getElementById('imp-go-btn').disabled = validation.validCount === 0;
+  el.innerHTML = `
+    <div style="margin-top:14px;font-weight:700;font-size:13px;color:#1B3A5C;">Column Mapping (${headers.length} columns detected)</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:8px;">
+      ${headers.map(h => `
+        <div class="form-group">
+          <label style="font-size:11px;">${h}</label>
+          <select onchange="importParsed.mapping['${h.replace(/'/g,"\\'")}']=this.value;renderImportPreview(importParsed.headers,importParsed.rows)">
+            <option value="">— Skip —</option>
+            ${IMPORT_FIELDS.map(f => `<option value="${f.key}" ${importParsed.mapping[h]===f.key?'selected':''}>${f.label}${f.required?' *':''}</option>`).join('')}
+          </select>
+        </div>`).join('')}
+    </div>
+    <div style="margin-top:14px;font-weight:700;font-size:13px;color:#1B3A5C;">Preview (first ${previewRows.length} of ${rows.length} rows)</div>
+    <div class="table-wrap" style="margin-top:6px;max-height:240px;overflow-y:auto;">
+      <table>
+        <thead><tr><th style="width:32px;text-align:center;">&nbsp;</th>${headers.map(h=>`<th>${h} <span style="opacity:0.6;font-weight:400;">${importParsed.mapping[h]||'—'}</span></th>`).join('')}</tr></thead>
+        <tbody>${previewRows.map((r,i)=>{
+          const v = validation.perRow[i];
+          const icon = v.ok ? '<span style="color:#4CAF50;">&#10003;</span>' : '<span style="color:#F44336;" title="'+v.errors.join('; ')+'">&#9888;</span>';
+          return `<tr><td style="text-align:center;">${icon}</td>${headers.map((_,j)=>`<td style="font-size:12px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r[j]||''}</td>`).join('')}</tr>`;
+        }).join('')}</tbody>
+      </table>
+    </div>
+    <div style="margin-top:10px;font-size:13px;">
+      <span style="color:#4CAF50;font-weight:700;">${validation.validCount} valid</span> ·
+      <span style="color:#F44336;font-weight:700;">${validation.invalidCount} invalid</span>
+      ${validation.errorSummary.length ? '<div style="margin-top:6px;color:#F44336;font-size:12px;">' + validation.errorSummary.slice(0,5).join('<br>') + (validation.errorSummary.length>5?'<br>…':'') + '</div>' : ''}
+    </div>`;
+}
+
+function validateImport() {
+  const m = importParsed.mapping;
+  const headerToIdx = {}; importParsed.headers.forEach((h,i)=> headerToIdx[h]=i);
+  const requiredFields = IMPORT_FIELDS.filter(f=>f.required).map(f=>f.key);
+  const mappedFields = Object.values(m).filter(Boolean);
+  const missingRequired = requiredFields.filter(f => !mappedFields.includes(f));
+  const perRow = []; let valid=0, invalid=0;
+  const errorSummary = [];
+  if (missingRequired.length) errorSummary.push('Missing required field mapping: ' + missingRequired.join(', '));
+  importParsed.rows.forEach((row, i) => {
+    const errs = [];
+    requiredFields.forEach(f => {
+      const h = Object.keys(m).find(k => m[k] === f);
+      const v = h ? row[headerToIdx[h]] : '';
+      if (!v || !String(v).trim()) errs.push(f + ' missing');
+    });
+    // Amount numeric check
+    const amtH = Object.keys(m).find(k => m[k] === 'amount');
+    if (amtH) {
+      const v = row[headerToIdx[amtH]];
+      if (v && isNaN(parseFloat(v))) errs.push('amount not numeric');
+    }
+    // Stage validity
+    const stH = Object.keys(m).find(k => m[k] === 'stage');
+    if (stH) {
+      const v = String(row[headerToIdx[stH]]||'').trim();
+      if (v && !STAGE_ORDER.includes(v)) errs.push('invalid stage "'+v+'"');
+    }
+    // Market validity
+    const mkH = Object.keys(m).find(k => m[k] === 'market');
+    if (mkH) {
+      const v = String(row[headerToIdx[mkH]]||'').trim();
+      if (v && !['Brazil','Mexico','Argentina','Colombia'].includes(v)) errs.push('unknown market "'+v+'"');
+    }
+    perRow.push({ ok: errs.length===0, errors: errs });
+    if (errs.length===0) valid++; else invalid++;
+  });
+  return { perRow, validCount: valid, invalidCount: invalid, errorSummary };
+}
+
+async function executeImport() {
+  const v = validateImport();
+  if (v.validCount === 0) { showToast('No valid rows to import', 'error'); return; }
+  const m = importParsed.mapping;
+  const headerToIdx = {}; importParsed.headers.forEach((h,i)=> headerToIdx[h]=i);
+  const stageProb = {}; STAGES.forEach(s => { stageProb[s.stage_name] = Number(s.probability)||0; });
+
+  const insertRows = [];
+  importParsed.rows.forEach((row,i) => {
+    if (!v.perRow[i].ok) return;
+    const obj = {};
+    Object.entries(m).forEach(([h,field]) => {
+      if (!field) return;
+      const raw = row[headerToIdx[h]];
+      if (raw === undefined || raw === '') return;
+      if (field === 'amount') obj.amount = parseFloat(raw)||0;
+      else if (['client_deadline','proposal_deadline','fiscal_start','fiscal_end','next_action_date'].includes(field)) {
+        const d = String(raw).slice(0,10); if (/^\d{4}-\d{2}-\d{2}$/.test(d)) obj[field] = d;
+      } else obj[field] = String(raw);
+    });
+    obj.tier = tierFromAmount(obj.amount||0);
+    if (stageProb[obj.stage] !== undefined) obj.probability = stageProb[obj.stage];
+    if (currentUser) obj.created_by = currentUser.id;
+    insertRows.push(obj);
+  });
+
+  const btn = document.getElementById('imp-go-btn');
+  btn.disabled = true; btn.textContent = 'Importing...';
+  const { error } = await sb.from('opportunities').insert(insertRows);
+  btn.disabled = false; btn.textContent = 'Import Deals';
+  if (error) { showToast('Import failed: '+error.message, 'error'); return; }
+  document.getElementById('import-modal').classList.remove('open');
+  showToast('Imported '+insertRows.length+' deal'+(insertRows.length===1?'':'s'));
+  await loadAllData(); initUI();
 }
 
 // ===================================================================
