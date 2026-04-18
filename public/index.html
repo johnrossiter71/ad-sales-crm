@@ -318,6 +318,7 @@ tbody tr:hover{background:#f5f8fc;}
         <div class="user-avatar" id="user-avatar">?</div>
         <span class="user-email" id="user-email"></span>
       </div>
+      <button class="logout-btn" onclick="openReportsModal()" style="background:rgba(100,181,246,0.25);" title="Reports">&#128202; Reports</button>
       <button class="logout-btn" onclick="signOut()">Sign Out</button>
     </div>
   </div>
@@ -503,6 +504,9 @@ tbody tr:hover{background:#f5f8fc;}
 
 <!-- IMPORT MODAL -->
 <div class="modal-overlay" id="import-modal"><div class="modal" id="import-modal-content" style="width:920px;max-width:96vw;"></div></div>
+
+<!-- REPORTS MODAL -->
+<div class="modal-overlay" id="reports-modal"><div class="modal" id="reports-modal-content" style="width:960px;max-width:96vw;"></div></div>
 
 <!-- TOAST -->
 <div class="toast" id="toast"></div>
@@ -772,7 +776,7 @@ function initUI() {
   searchInput.addEventListener('blur', ()=>{ setTimeout(()=>searchResults.classList.remove('open'),200); });
 
   // Modal close on overlay click
-  ['deal-modal','activity-modal','advertiser-modal','import-modal'].forEach(id=>{
+  ['deal-modal','activity-modal','advertiser-modal','import-modal','reports-modal'].forEach(id=>{
     const el = document.getElementById(id);
     if (el) el.addEventListener('click', function(e){ if(e.target===this) this.classList.remove('open'); });
   });
@@ -1959,6 +1963,169 @@ async function inlineSaveActivity(dealId) {
 function inlineSetType(type) {
   _inlineActType = type;
   document.querySelectorAll('.iaf-toggle').forEach(b => b.classList.toggle('active', b.dataset.type === type));
+}
+
+// ===================================================================
+// REPORTS
+// ===================================================================
+function openReportsModal() {
+  document.getElementById('reports-modal-content').innerHTML = `
+    <div class="modal-header">
+      <h2>Reports</h2>
+      <button class="modal-close" onclick="document.getElementById('reports-modal').classList.remove('open')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:14px;">
+        <button class="btn-secondary" style="text-align:left;padding:12px;" onclick="generateReport('weekly')">
+          <strong>Weekly Pipeline Summary</strong><div style="font-size:11px;color:#888;margin-top:4px;">Stage totals, new deals this week, stage changes, stalled, top 5</div>
+        </button>
+        <button class="btn-secondary" style="text-align:left;padding:12px;" onclick="generateReport('forecast')">
+          <strong>Monthly Forecast Report</strong><div style="font-size:11px;color:#888;margin-top:4px;">Forecast vs actuals, coverage ratio, Linear/Digital trend, weighted next 3 months</div>
+        </button>
+        <button class="btn-secondary" style="text-align:left;padding:12px;" onclick="generateReport('rep')">
+          <strong>Rep Performance</strong><div style="font-size:11px;color:#888;margin-top:4px;">Won/lost, pipeline, activity, win rate, avg deal size, avg days to close</div>
+        </button>
+        <button class="btn-secondary" style="text-align:left;padding:12px;" onclick="generateReport('stalled')">
+          <strong>Stalled Deals Report</strong><div style="font-size:11px;color:#888;margin-top:4px;">All deals exceeding stall thresholds, sorted most overdue first</div>
+        </button>
+      </div>
+      <div id="report-output" style="border:1px solid #e0e0e0;border-radius:10px;padding:0;background:#f8f9fa;min-height:200px;display:flex;align-items:center;justify-content:center;color:#bbb;font-size:13px;">Pick a report above to generate</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" id="rpt-print-btn" onclick="printReport()" disabled>Print</button>
+      <button class="btn-secondary" id="rpt-copy-btn" onclick="copyReport()" disabled>Copy to Clipboard</button>
+      <button class="btn-primary" onclick="document.getElementById('reports-modal').classList.remove('open')">Close</button>
+    </div>`;
+  document.getElementById('reports-modal').classList.add('open');
+}
+
+function _enableReportButtons() {
+  document.getElementById('rpt-print-btn').disabled = false;
+  document.getElementById('rpt-copy-btn').disabled = false;
+}
+
+function printReport() {
+  const html = document.getElementById('report-output').innerHTML;
+  const win = window.open('', '_blank');
+  win.document.write('<html><head><title>Report</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#1a1a2e;}h2{color:#1B3A5C;}h3{color:#1B3A5C;margin-top:16px;border-bottom:1px solid #ddd;padding-bottom:4px;}table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px;}th{background:#1B3A5C;color:#fff;text-align:left;padding:6px 10px;}td{padding:6px 10px;border-bottom:1px solid #eee;}.amount{text-align:right;font-variant-numeric:tabular-nums;}</style></head><body>'+html+'</body></html>');
+  win.document.close();
+  setTimeout(()=>win.print(), 300);
+}
+
+function copyReport() {
+  const el = document.getElementById('report-output');
+  // Plain text version
+  const text = el.innerText;
+  navigator.clipboard.writeText(text).then(()=>showToast('Report copied to clipboard'),
+    ()=>showToast('Copy failed','error'));
+}
+
+function generateReport(type) {
+  let html = '';
+  if (type === 'weekly') html = reportWeeklyPipeline();
+  else if (type === 'forecast') html = reportMonthlyForecast();
+  else if (type === 'rep') html = reportRepPerformance();
+  else if (type === 'stalled') html = reportStalled();
+  const out = document.getElementById('report-output');
+  out.style.padding = '20px';
+  out.style.background = '#fff';
+  out.style.color = '#1a1a2e';
+  out.style.alignItems = 'flex-start';
+  out.style.justifyContent = 'flex-start';
+  out.style.display = 'block';
+  out.innerHTML = html;
+  _enableReportButtons();
+}
+
+function _weekAgo() { const d = new Date(); d.setDate(d.getDate()-7); return d.toISOString().slice(0,10); }
+
+function reportWeeklyPipeline() {
+  const wk = _weekAgo();
+  const active = DEALS.filter(d => d.stage !== 'Closed Won' && d.stage !== 'Closed Lost');
+  const newThisWeek = DEALS.filter(d => d.created_at && d.created_at.slice(0,10) >= wk);
+  const stageChanged = DEALS.filter(d => d.updated_at && d.updated_at.slice(0,10) >= wk && (!d.created_at || d.updated_at.slice(0,10) > d.created_at.slice(0,10)));
+  const stalled = DEALS.filter(d => d.is_stalled);
+  const upcoming = DEALS.filter(d => d.next_action_date && d.stage !== 'Closed Won' && d.stage !== 'Closed Lost' && daysBetween(today, d.next_action_date) <= 7).sort((a,b)=>daysBetween(today,a.next_action_date)-daysBetween(today,b.next_action_date));
+  const top5 = [...active].sort((a,b)=>(b.amount||0)-(a.amount||0)).slice(0,5);
+  const stageRows = STAGE_ORDER.filter(s=>s!=='Closed Won'&&s!=='Closed Lost').map(s => {
+    const ds = active.filter(d=>d.stage===s);
+    return `<tr><td>${s}</td><td class="amount">${ds.length}</td><td class="amount">${fmt(ds.reduce((a,b)=>a+(b.amount||0),0))}</td></tr>`;
+  }).join('');
+  return `<h2>Weekly Pipeline Summary</h2>
+    <div style="font-size:12px;color:#666;">Generated ${today} · Period covers last 7 days</div>
+    <h3>Pipeline by Stage</h3>
+    <table><thead><tr><th>Stage</th><th class="amount">Deals</th><th class="amount">Value</th></tr></thead><tbody>${stageRows}</tbody></table>
+    <h3>New Deals This Week (${newThisWeek.length})</h3>
+    ${newThisWeek.length ? '<table><thead><tr><th>Deal</th><th>Rep</th><th>Stage</th><th class="amount">Amount</th></tr></thead><tbody>'+newThisWeek.map(d=>`<tr><td>${d.opportunity_name}</td><td>${d.sales_rep||''}</td><td>${d.stage}</td><td class="amount">${fmt(d.amount)}</td></tr>`).join('')+'</tbody></table>' : '<p style="color:#888;font-size:12px;">No new deals this week.</p>'}
+    <h3>Stage Changes This Week (${stageChanged.length})</h3>
+    ${stageChanged.length ? '<table><thead><tr><th>Deal</th><th>Stage</th><th>Rep</th><th class="amount">Amount</th></tr></thead><tbody>'+stageChanged.map(d=>`<tr><td>${d.opportunity_name}</td><td>${d.stage}</td><td>${d.sales_rep||''}</td><td class="amount">${fmt(d.amount)}</td></tr>`).join('')+'</tbody></table>' : '<p style="color:#888;font-size:12px;">No stage changes this week.</p>'}
+    <h3>Stalled Deals (${stalled.length})</h3>
+    ${stalled.length ? '<table><thead><tr><th>Deal</th><th>Stage</th><th>Days@Stage</th><th>Rep</th></tr></thead><tbody>'+stalled.map(d=>`<tr><td>${d.opportunity_name}</td><td>${d.stage}</td><td>${d.days_in_stage}d (max ${d.max_days_stall}d)</td><td>${d.sales_rep||''}</td></tr>`).join('')+'</tbody></table>' : '<p style="color:#888;font-size:12px;">No stalled deals — all on track.</p>'}
+    <h3>Upcoming Deadlines (next 7 days)</h3>
+    ${upcoming.length ? '<table><thead><tr><th>Date</th><th>Deal</th><th>Rep</th><th>Action</th></tr></thead><tbody>'+upcoming.map(d=>`<tr><td>${dateStr(d.next_action_date)}</td><td>${d.opportunity_name}</td><td>${d.sales_rep||''}</td><td>${d.next_action||''}</td></tr>`).join('')+'</tbody></table>' : '<p style="color:#888;font-size:12px;">No upcoming deadlines.</p>'}
+    <h3>Top 5 Deals by Value</h3>
+    <table><thead><tr><th>Deal</th><th>Stage</th><th>Rep</th><th class="amount">Amount</th></tr></thead><tbody>${top5.map(d=>`<tr><td>${d.opportunity_name}</td><td>${d.stage}</td><td>${d.sales_rep||''}</td><td class="amount">${fmt(d.amount)}</td></tr>`).join('')}</tbody></table>`;
+}
+
+function reportMonthlyForecast() {
+  const monthAgg={};
+  FORECASTS.forEach(f=>{ if(!monthAgg[f.month])monthAgg[f.month]={fc:0,act:0,hasAct:false}; monthAgg[f.month].fc+=(f.forecast_amount||0); if(f.actual_amount!=null){monthAgg[f.month].act+=f.actual_amount;monthAgg[f.month].hasAct=true;} });
+  const months = Object.keys(monthAgg).sort();
+  const rows = months.map(m => {
+    const d = monthAgg[m]; const v = d.hasAct ? d.act-d.fc : null;
+    return `<tr><td>${m}</td><td class="amount">${fmt(d.fc)}</td><td class="amount">${d.hasAct?fmt(d.act):'—'}</td><td class="amount" style="color:${v!==null?(v>=0?'#4CAF50':'#F44336'):'#888'};">${v!==null?(v>=0?'+':'')+fmt(v):'—'}</td></tr>`;
+  }).join('');
+  // Coverage ratio: pipeline / sum of forecast
+  const totalFc = months.reduce((s,m)=>s+monthAgg[m].fc,0);
+  const totalPipeline = DEALS.filter(d=>d.stage!=='Closed Won'&&d.stage!=='Closed Lost').reduce((s,d)=>s+(d.amount||0),0);
+  const coverage = totalFc>0 ? (totalPipeline/totalFc).toFixed(2)+'x' : '—';
+  // Weighted next 3 months
+  const upcoming3 = months.filter(m => m >= today.slice(0,7)).slice(0,3);
+  const weightedNext = upcoming3.reduce((s,m) => s + monthAgg[m].fc, 0);
+  // Linear/Digital trend totals
+  const totals = totalsByPlatform(ACTUALS);
+  return `<h2>Monthly Forecast Report</h2>
+    <div style="font-size:12px;color:#666;">Generated ${today}</div>
+    <div style="display:flex;gap:14px;margin-top:12px;flex-wrap:wrap;">
+      <div style="background:#f8f9fa;padding:10px 14px;border-radius:8px;"><div style="font-size:11px;color:#888;text-transform:uppercase;font-weight:700;">Pipeline Coverage</div><div style="font-size:18px;font-weight:800;color:#1B3A5C;">${coverage}</div></div>
+      <div style="background:#f8f9fa;padding:10px 14px;border-radius:8px;"><div style="font-size:11px;color:#888;text-transform:uppercase;font-weight:700;">Next 3 Months Forecast</div><div style="font-size:18px;font-weight:800;color:#1B3A5C;">${fmtK(weightedNext)}</div></div>
+      <div style="background:#f8f9fa;padding:10px 14px;border-radius:8px;"><div style="font-size:11px;color:#888;text-transform:uppercase;font-weight:700;">Linear vs Digital</div><div style="font-size:18px;font-weight:800;color:#1B3A5C;">${fmtK(totals.linear)} / ${fmtK(totals.digital)}</div></div>
+    </div>
+    <h3>Forecast vs Actuals by Month</h3>
+    <table><thead><tr><th>Month</th><th class="amount">Forecast</th><th class="amount">Actual</th><th class="amount">Variance</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function reportRepPerformance() {
+  const reps = [...new Set(DEALS.map(d=>d.sales_rep).filter(Boolean))].sort();
+  const rows = reps.map(name => {
+    const repDeals = DEALS.filter(d => d.sales_rep === name);
+    const won = repDeals.filter(d => d.stage === 'Closed Won');
+    const lost = repDeals.filter(d => d.stage === 'Closed Lost');
+    const active = repDeals.filter(d => d.stage !== 'Closed Won' && d.stage !== 'Closed Lost');
+    const winRate = (won.length+lost.length)>0 ? Math.round(won.length/(won.length+lost.length)*100) : 0;
+    const avgDeal = won.length>0 ? Math.round(won.reduce((s,d)=>s+(d.amount||0),0)/won.length) : 0;
+    const repActs = ACTIVITIES.filter(a => a.sales_rep === name).length;
+    const daysToClose = won.filter(d=>d.created_at&&d.updated_at).map(d=>daysBetween(d.created_at,d.updated_at));
+    const avgDays = daysToClose.length>0 ? Math.round(daysToClose.reduce((a,b)=>a+b,0)/daysToClose.length) : '—';
+    return `<tr><td><strong>${name}</strong></td><td class="amount">${won.length}</td><td class="amount">${lost.length}</td><td class="amount">${winRate}%</td><td class="amount">${fmt(active.reduce((s,d)=>s+(d.amount||0),0))}</td><td class="amount">${fmt(avgDeal)}</td><td class="amount">${avgDays}</td><td class="amount">${repActs}</td></tr>`;
+  }).join('');
+  return `<h2>Rep Performance Report</h2>
+    <div style="font-size:12px;color:#666;">Generated ${today}</div>
+    <table><thead><tr><th>Rep</th><th class="amount">Won</th><th class="amount">Lost</th><th class="amount">Win Rate</th><th class="amount">Pipeline</th><th class="amount">Avg Deal</th><th class="amount">Avg Days to Close</th><th class="amount">Activities</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+}
+
+function reportStalled() {
+  const stalled = DEALS.filter(d => d.is_stalled).map(d => ({...d, overdueBy: d.days_in_stage - (d.max_days_stall||0)}))
+    .sort((a,b)=>b.overdueBy-a.overdueBy);
+  if (!stalled.length) return '<h2>Stalled Deals Report</h2><p style="color:#888;">No stalled deals — everything is within thresholds.</p>';
+  const rows = stalled.map(d => {
+    const lastAct = lastActivityForDeal(d.id);
+    return `<tr><td><strong>${d.opportunity_name}</strong></td><td>${d.stage}</td><td class="amount">${d.days_in_stage}d</td><td class="amount" style="color:#F44336;font-weight:700;">+${d.overdueBy}d over</td><td>${lastAct||'—'}</td><td>${d.next_action||'—'}</td><td>${d.sales_rep||''}</td><td class="amount">${fmt(d.amount)}</td></tr>`;
+  }).join('');
+  return `<h2>Stalled Deals Report</h2>
+    <div style="font-size:12px;color:#666;">Generated ${today} · ${stalled.length} stalled deal${stalled.length===1?'':'s'}</div>
+    <table><thead><tr><th>Deal</th><th>Stage</th><th class="amount">Days@Stage</th><th class="amount">Overdue</th><th>Last Activity</th><th>Next Action</th><th>Rep</th><th class="amount">Amount</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 // ===================================================================
