@@ -270,12 +270,68 @@ tbody tr:hover{background:#f5f8fc;}
 @keyframes toastIn{from{opacity:0;transform:translateY(20px);}to{opacity:1;transform:translateY(0);}}
 
 /* ===== RESPONSIVE ===== */
-@media(max-width:1024px){.chart-grid{grid-template-columns:1fr;}.form-row{grid-template-columns:1fr;}}
+@media(max-width:1024px){.chart-grid{grid-template-columns:1fr;}.form-row{grid-template-columns:1fr;}.kpi-row{grid-template-columns:repeat(3,1fr);}}
+
+/* Hamburger menu (hidden by default; shown on mobile) */
+.hamburger{display:none;background:rgba(255,255,255,0.15);border:none;color:#fff;width:40px;height:40px;border-radius:8px;cursor:pointer;font-size:18px;align-items:center;justify-content:center;}
+
 @media(max-width:768px){
-  .kpi-row{grid-template-columns:repeat(2,1fr);}.detail-panel{width:100%;}.topbar{padding:0 12px;}
-  .search-box input{width:160px;}.search-box input:focus{width:200px;}
-  .rep-cards{grid-template-columns:1fr;}.tabs{overflow-x:auto;}.modal{width:95vw;}
+  .topbar{padding:0 10px;height:52px;}
+  .topbar-logo{font-size:16px;}
+  .topbar-sub{display:none;}
+  .search-box{display:none;}
+  .user-email{display:none;}
+  .hamburger{display:inline-flex;}
+  .tabs{display:none;flex-direction:column;background:#fff;border-bottom:1px solid #e0e0e0;padding:0;position:fixed;top:52px;left:0;right:0;bottom:0;z-index:1500;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,0.15);}
+  .tabs.mobile-open{display:flex;}
+  .tab{padding:16px 20px;border-bottom:1px solid #f0f0f0;font-size:14px;border-bottom-color:#f0f0f0;border-right:none;}
+  .tab.active{border-bottom-color:#1B3A5C;background:#f5f8fc;}
+  .view{padding:14px 12px;}
+  .kpi-row{grid-template-columns:1fr;gap:8px;margin-bottom:14px;}
+  .kpi{padding:14px 12px;}
+  .kpi-value{font-size:22px;}
+  .section-header{flex-direction:column;align-items:flex-start;gap:8px;}
+  .section-header h2{font-size:16px;}
+  .filters{flex-direction:column;align-items:stretch;}
+  .filter-group{width:100%;}
+  .filter-group select,.filter-group input{width:100%;font-size:15px;padding:10px 12px;min-height:44px;}
+  .btn-primary,.btn-secondary,.btn-danger{padding:11px 18px;font-size:14px;min-height:44px;}
+  .filter-clear{padding:10px 14px;font-size:14px;min-height:44px;}
+  /* Detail panel becomes full-screen overlay */
+  .detail-overlay.open{justify-content:center;align-items:stretch;}
+  .detail-panel{width:100%;max-width:100%;height:100%;max-height:100vh;border-radius:0;animation:none;}
+  .detail-header{padding:18px;}
+  .detail-header h2{font-size:15px;}
+  .detail-body{padding:14px 16px;}
+  .detail-row{flex-direction:column;align-items:flex-start;gap:2px;padding:8px 0;}
+  .detail-row .dv{text-align:left;max-width:100%;}
+  /* Pipeline table -> stacked card layout */
+  #pipeline-table .table-wrap{box-shadow:none;background:transparent;}
+  #pipeline-table table thead{display:none;}
+  #pipeline-table table,#pipeline-table tbody,#pipeline-table tr,#pipeline-table td{display:block;width:100%;}
+  #pipeline-table tbody tr{background:#fff;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,0.06);margin-bottom:10px;padding:10px 12px;border-bottom:none;}
+  #pipeline-table tbody td{padding:4px 0;border-bottom:none;font-size:13px;}
+  #pipeline-table tbody td:before{content:attr(data-mlabel);color:#888;font-size:11px;font-weight:700;text-transform:uppercase;display:block;margin-bottom:2px;}
+  /* Kanban: horizontal scroll snap */
+  .kanban{scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;}
+  .kanban-col{scroll-snap-align:start;min-width:85vw;max-width:85vw;}
+  .kanban-cards{max-height:none;}
+  /* Charts: shrink labels */
+  .bar-label{width:100px;font-size:11px;}
+  .donut-container{flex-direction:column;align-items:center;gap:12px;}
+  /* Modal becomes fuller */
+  .modal-overlay{padding-top:0;align-items:stretch;}
+  .modal{width:100%;max-width:100%;max-height:100vh;border-radius:0;}
+  .modal-body{padding:14px;}
+  .form-row{grid-template-columns:1fr;}
+  /* Quick-act buttons larger for thumbs */
+  .quick-act-btn{width:32px;height:32px;font-size:15px;}
+  /* Rep cards single column */
+  .rep-cards{grid-template-columns:1fr;}
+  /* Logout/Reports buttons compact */
+  .logout-btn{padding:8px 10px;font-size:11px;}
 }
+
 @media print{.topbar,.tabs,.filters,.filter-clear,.view-toggle,.search-box,.btn-primary,.btn-secondary,.user-menu,.logout-btn{display:none !important;}.view{display:block !important;page-break-after:always;padding:12px;}.kpi,.chart-card,.table-wrap{box-shadow:none;border:1px solid #ddd;}body{background:#fff;}}
 </style>
 </head>
@@ -305,6 +361,7 @@ tbody tr:hover{background:#f5f8fc;}
   <!-- TOPBAR -->
   <div class="topbar">
     <div class="topbar-left">
+      <button class="hamburger" id="hamburger-btn" aria-label="Menu">&#9776;</button>
       <div><div class="topbar-logo">P6 <span>Ad Sales CRM</span></div><div class="topbar-sub">Ad Sales In-House Optimisation</div></div>
     </div>
     <div class="topbar-right">
@@ -784,14 +841,21 @@ function initUI() {
     document.getElementById(id).addEventListener('change', renderActivity);
   });
 
-  // Tab switching
+  // Tab switching (also closes mobile menu)
   document.querySelectorAll('.tab').forEach(tab => {
     tab.addEventListener('click', () => {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
       tab.classList.add('active');
       document.getElementById(tab.dataset.view).classList.add('active');
+      document.getElementById('tab-bar').classList.remove('mobile-open');
     });
+  });
+
+  // Hamburger menu
+  const hb = document.getElementById('hamburger-btn');
+  if (hb) hb.addEventListener('click', () => {
+    document.getElementById('tab-bar').classList.toggle('mobile-open');
   });
 
   // Pipeline toggle
@@ -1298,15 +1362,18 @@ function renderPipelineTable(deals) {
   const sorted = [...deals].sort((a,b)=>{ if(a.is_stalled&&!b.is_stalled)return -1; if(!a.is_stalled&&b.is_stalled)return 1; return (b.amount||0)-(a.amount||0); });
   document.getElementById('pipeline-tbody').innerHTML = sorted.map(d=>`
     <tr class="${d.is_stalled?'stalled-row':''}" onclick="showDetail('${d.id}')">
-      <td><strong>${d.opportunity_name}</strong>${d.is_stalled?'<span class="stall-badge">STALLED</span>':''}</td>
-      <td>${d.advertiser_child||''}</td><td>${d.market||''}</td><td>${d.sales_rep||''}</td>
-      <td><span class="type-badge ${typeClass(d.opportunity_type)}">${d.opportunity_type||''}</span></td>
-      <td><span class="tier-badge tier-${d.tier}">${{1:'Anchor',2:'Featured',3:'Programmatic'}[d.tier]||''}</span></td>
-      <td><span class="stage-badge ${stageClass(d.stage)}">${d.stage}</span></td>
-      <td class="amount">${fmt(d.amount)}</td><td class="amount">${fmt(d.weighted)}</td>
-      <td>${d.stage==='Closed Won'||d.stage==='Closed Lost'?'-':d.opp_age+'d'}</td>
-      <td class="${d.is_stalled?'overdue':''}">${d.stage==='Closed Won'||d.stage==='Closed Lost'?'-':d.days_in_stage+'d'}</td>
-      <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${d.next_action||'-'}</td>
+      <td data-mlabel="Opportunity"><strong>${d.opportunity_name}</strong>${d.is_stalled?'<span class="stall-badge">STALLED</span>':''}</td>
+      <td data-mlabel="Advertiser">${d.advertiser_child||''}</td>
+      <td data-mlabel="Market">${d.market||''}</td>
+      <td data-mlabel="Rep">${d.sales_rep||''}</td>
+      <td data-mlabel="Type"><span class="type-badge ${typeClass(d.opportunity_type)}">${d.opportunity_type||''}</span></td>
+      <td data-mlabel="Tier"><span class="tier-badge tier-${d.tier}">${{1:'Anchor',2:'Featured',3:'Programmatic'}[d.tier]||''}</span></td>
+      <td data-mlabel="Stage"><span class="stage-badge ${stageClass(d.stage)}">${d.stage}</span></td>
+      <td data-mlabel="Amount" class="amount">${fmt(d.amount)}</td>
+      <td data-mlabel="Weighted" class="amount">${fmt(d.weighted)}</td>
+      <td data-mlabel="Age">${d.stage==='Closed Won'||d.stage==='Closed Lost'?'-':d.opp_age+'d'}</td>
+      <td data-mlabel="Days@Stage" class="${d.is_stalled?'overdue':''}">${d.stage==='Closed Won'||d.stage==='Closed Lost'?'-':d.days_in_stage+'d'}</td>
+      <td data-mlabel="Next Action" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${d.next_action||'-'}</td>
     </tr>`).join('');
 }
 
