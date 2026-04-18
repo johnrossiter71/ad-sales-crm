@@ -333,7 +333,10 @@ tbody tr:hover{background:#f5f8fc;}
       <div class="chart-card"><h3>Top 5 Deals</h3><div class="table-wrap" style="box-shadow:none;"><table><thead><tr><th>Deal</th><th>Rep</th><th>Stage</th><th style="text-align:right">Amount</th></tr></thead><tbody id="dash-top-deals"></tbody></table></div></div>
       <div class="chart-card"><h3>Upcoming Deadlines (7 Days)</h3><div id="dash-upcoming"></div></div>
     </div>
-    <div class="chart-card" style="margin-bottom:20px;"><h3>Recent Activity</h3><div id="dash-recent-activity"></div></div>
+    <div class="chart-grid">
+      <div class="chart-card"><h3>Upcoming Renewals (next 90 days)</h3><div id="dash-renewals"></div></div>
+      <div class="chart-card"><h3>Recent Activity</h3><div id="dash-recent-activity"></div></div>
+    </div>
   </div>
 
   <!-- PIPELINE -->
@@ -344,6 +347,7 @@ tbody tr:hover{background:#f5f8fc;}
         <div class="view-toggle" id="pipeline-toggle">
           <button class="active" data-mode="kanban">Kanban</button>
           <button data-mode="table">Table</button>
+          <button data-mode="renewals">Renewals</button>
         </div>
         <button class="btn-secondary" onclick="openImportModal()">&#128229; Import Deals</button>
         <button class="btn-primary" onclick="openNewDealModal()">+ New Deal</button>
@@ -363,6 +367,20 @@ tbody tr:hover{background:#f5f8fc;}
     <div id="pipeline-table" style="display:none;"><div class="table-wrap"><table><thead><tr>
       <th>Opportunity</th><th>Advertiser</th><th>Market</th><th>Rep</th><th>Type</th><th>Tier</th><th>Stage</th><th style="text-align:right">Amount</th><th style="text-align:right">Weighted</th><th>Age</th><th>Days@Stage</th><th>Next Action</th>
     </tr></thead><tbody id="pipeline-tbody"></tbody></table></div></div>
+    <div id="pipeline-renewals" style="display:none;">
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px;">
+        <div style="font-size:13px;color:#666;">Showing deals expiring within</div>
+        <select id="renewal-window" onchange="renderPipeline()" style="padding:6px 10px;border:1px solid #ddd;border-radius:8px;font-size:13px;">
+          <option value="30">30 days</option>
+          <option value="60">60 days</option>
+          <option value="90" selected>90 days</option>
+          <option value="180">180 days</option>
+        </select>
+      </div>
+      <div class="table-wrap"><table><thead><tr>
+        <th>Opportunity</th><th>Advertiser</th><th>Market</th><th>Rep</th><th>Tier</th><th style="text-align:right">Amount</th><th>Expires</th><th>Days Left</th><th>Renewal Probability</th><th></th>
+      </tr></thead><tbody id="renewals-tbody"></tbody></table></div>
+    </div>
   </div>
 
   <!-- FORECAST -->
@@ -714,6 +732,9 @@ function initUI() {
       pipelineMode = btn.dataset.mode;
       document.getElementById('pipeline-kanban').style.display = pipelineMode==='kanban'?'flex':'none';
       document.getElementById('pipeline-table').style.display = pipelineMode==='table'?'block':'none';
+      const ren = document.getElementById('pipeline-renewals');
+      if (ren) ren.style.display = pipelineMode==='renewals'?'block':'none';
+      if (pipelineMode==='renewals') renderRenewals();
     });
   });
 
@@ -794,6 +815,11 @@ function renderDashboard() {
   FORECASTS.forEach(f=>{ if(f.actual_amount!=null){ fcTotal+=f.forecast_amount||0; actTotal+=f.actual_amount; }});
   const accuracy = fcTotal>0 ? Math.round(actTotal/fcTotal*100) : 0;
 
+  // Renewals: deals with fiscal_end inside the next 90/30 days
+  const expiring90 = active.filter(d => d.fiscal_end && daysBetween(today, d.fiscal_end) >= 0 && daysBetween(today, d.fiscal_end) <= 90);
+  const expiring30 = expiring90.filter(d => daysBetween(today, d.fiscal_end) <= 30);
+  const tier1Expiring = expiring90.filter(d => d.tier === 1);
+
   // Linear vs Digital revenue from booked actuals (used in KPI + chart)
   const platTotals = totalsByPlatform(ACTUALS);
   const linearPct = platTotals.total > 0 ? Math.round(platTotals.linear / platTotals.total * 100) : 0;
@@ -810,6 +836,8 @@ function renderDashboard() {
     <div class="kpi purple"><div class="kpi-label">Won This Quarter</div><div class="kpi-value">${won.length}</div><div class="kpi-sub">${fmt(won.reduce((s,d)=>s+(d.amount||0),0))}</div></div>
     <div class="kpi ${lost.length>0?'red':'green'}"><div class="kpi-label">Lost This Quarter</div><div class="kpi-value">${lost.length}</div><div class="kpi-sub">${fmt(lost.reduce((s,d)=>s+(d.amount||0),0))}</div></div>
     <div class="kpi teal"><div class="kpi-label">Linear / Digital Ratio</div><div class="kpi-value">${ratioLabel}</div><div class="kpi-sub">${fmtK(platTotals.linear)} L · ${fmtK(platTotals.digital)} D</div></div>
+    <div class="kpi orange"><div class="kpi-label">Expiring in 90 Days</div><div class="kpi-value">${expiring90.length}</div><div class="kpi-sub">${tier1Expiring.length>0?'<span style="color:#F44336;font-weight:700;">'+tier1Expiring.length+' Tier 1</span>':'No Tier 1 at risk'}</div></div>
+    <div class="kpi ${expiring30.length>0?'red':'green'}"><div class="kpi-label">Expiring in 30 Days</div><div class="kpi-value" style="${expiring30.length>0?'color:#F44336':''}">${expiring30.length}</div><div class="kpi-sub">${expiring30.length>0?'Action needed':'Nothing urgent'}</div></div>
   `;
 
   // Stage chart
@@ -874,6 +902,21 @@ function renderDashboard() {
       <div><div style="font-weight:600;color:#1B3A5C;">${u.next_action||'—'}</div><div style="font-size:11px;color:#888;">${u.opportunity_name} &middot; ${u.sales_rep||''}</div></div>
       <div class="${u.is_overdue?'overdue':''}" style="font-size:12px;font-weight:600;white-space:nowrap;margin-left:12px;">${u.is_overdue?Math.abs(u.days_until)+'d overdue':u.days_until===0?'Today':u.days_until+'d'}</div></div>`).join('');
 
+  // Upcoming renewals (top 5 soonest)
+  const renewalsSorted = [...expiring90].sort((a,b)=>daysBetween(today,a.fiscal_end)-daysBetween(today,b.fiscal_end)).slice(0,5);
+  document.getElementById('dash-renewals').innerHTML = renewalsSorted.length===0
+    ? '<div style="text-align:center;padding:24px;color:#888;font-size:13px;">No deals expiring in the next 90 days</div>'
+    : renewalsSorted.map(d => {
+        const days = daysBetween(today, d.fiscal_end);
+        const urgent = days <= 30;
+        const noAction = !d.next_action;
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f0f0f0;cursor:pointer;font-size:13px;" onclick="showDetail('${d.id}')">
+          <div><div style="font-weight:600;color:#1B3A5C;">${d.opportunity_name}${urgent&&noAction?' <span class="stall-badge" style="background:#FFCDD2;color:#B71C1C;">NO ACTION</span>':''}</div>
+            <div style="font-size:11px;color:#888;">${d.advertiser_child||''} &middot; ${d.sales_rep||''} &middot; ${fmt(d.amount)}</div></div>
+          <div style="text-align:right;"><div style="font-size:12px;color:${urgent?'#F44336':'#888'};font-weight:700;">${days}d left</div><div style="font-size:11px;color:#888;">${dateStr(d.fiscal_end)}</div></div>
+        </div>`;
+      }).join('');
+
   // Recent activity
   const recent = ACTIVITIES.slice(0,10);
   document.getElementById('dash-recent-activity').innerHTML = recent.map(a=>`
@@ -900,6 +943,69 @@ function renderPipeline() {
   const filtered = getFilteredDeals();
   renderKanban(filtered);
   renderPipelineTable(filtered);
+  renderRenewals();
+}
+
+function renderRenewals() {
+  const winSel = document.getElementById('renewal-window');
+  const win = winSel ? parseInt(winSel.value)||90 : 90;
+  const filtered = getFilteredDeals();
+  const renewals = filtered.filter(d =>
+    d.fiscal_end && d.stage !== 'Closed Lost' &&
+    daysBetween(today, d.fiscal_end) >= 0 && daysBetween(today, d.fiscal_end) <= win
+  ).sort((a,b)=>daysBetween(today,a.fiscal_end)-daysBetween(today,b.fiscal_end));
+  const tbody = document.getElementById('renewals-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = renewals.length === 0
+    ? '<tr><td colspan="10" style="text-align:center;padding:24px;color:#888;">No deals expiring in this window</td></tr>'
+    : renewals.map(d => {
+        const days = daysBetween(today, d.fiscal_end);
+        const urgent = days <= 30;
+        // Renewal probability heuristic: % of prior Closed Won for the same advertiser
+        const advDeals = DEALS.filter(x => x.advertiser_child === d.advertiser_child && x.id !== d.id);
+        const won = advDeals.filter(x => x.stage === 'Closed Won').length;
+        const lost = advDeals.filter(x => x.stage === 'Closed Lost').length;
+        const total = won + lost;
+        const renewalProb = total > 0 ? Math.round(won/total*100) : (advDeals.length > 0 ? 60 : 40);
+        const probColor = renewalProb >= 70 ? '#4CAF50' : renewalProb >= 40 ? '#FF9800' : '#F44336';
+        const noAction = !d.next_action;
+        return `<tr class="${urgent?'stalled-row':''}" onclick="showDetail('${d.id}')" style="cursor:pointer;">
+          <td><strong>${d.opportunity_name}</strong>${urgent&&noAction?' <span class="stall-badge" style="background:#FFCDD2;color:#B71C1C;">NO ACTION</span>':''}</td>
+          <td>${d.advertiser_child||''}</td><td>${d.market||''}</td><td>${d.sales_rep||''}</td>
+          <td><span class="tier-badge tier-${d.tier}">${{1:'Anchor',2:'Featured',3:'Programmatic'}[d.tier]||''}</span></td>
+          <td class="amount">${fmt(d.amount)}</td>
+          <td>${dateStr(d.fiscal_end)}</td>
+          <td class="${urgent?'overdue':''}" style="font-weight:700;">${days}d</td>
+          <td><div style="display:flex;align-items:center;gap:6px;"><div style="width:50px;height:6px;background:#f0f2f5;border-radius:3px;overflow:hidden;"><div style="width:${renewalProb}%;height:100%;background:${probColor};"></div></div><span style="font-size:12px;font-weight:700;color:${probColor};">${renewalProb}%</span></div></td>
+          <td><button class="btn-secondary" style="font-size:11px;padding:4px 10px;" onclick="event.stopPropagation();createRenewal('${d.id}')">Create Renewal</button></td>
+        </tr>`;
+      }).join('');
+}
+
+function createRenewal(dealId) {
+  const d = DEALS.find(x => x.id === dealId);
+  if (!d) return;
+  // Pre-fill the new-deal modal with same client/agency/rep + suggested name
+  renderDealForm(null);
+  document.getElementById('deal-modal').classList.add('open');
+  setTimeout(() => {
+    if (d.market) document.getElementById('df-market').value = d.market;
+    if (d.sales_rep) document.getElementById('df-rep').value = d.sales_rep;
+    if (d.opportunity_type) document.getElementById('df-type').value = d.opportunity_type;
+    if (d.amount) { document.getElementById('df-amount').value = d.amount; autoTier(); }
+    if (d.advertiser_child) document.getElementById('df-advertiser').value = d.advertiser_child;
+    if (d.advertiser_parent) document.getElementById('df-adv-parent').value = d.advertiser_parent;
+    if (d.agency_child) document.getElementById('df-agency').value = d.agency_child;
+    if (d.agency_parent) document.getElementById('df-agency-parent').value = d.agency_parent;
+    if (d.platform_mix) document.getElementById('df-platform').value = d.platform_mix;
+    if (d.category) document.getElementById('df-category').value = d.category;
+    if (d.contact_name) document.getElementById('df-contact').value = d.contact_name;
+    // Suggest a renewal name
+    const yr = new Date().getFullYear() + 1;
+    const abbr = {Brazil:'BRA',Mexico:'MEX',Argentina:'ARG',Colombia:'COL'}[d.market]||'';
+    const baseName = `${abbr} ${(d.advertiser_child||'').toUpperCase()} ${yr} ${(d.opportunity_type||'').toUpperCase()} RENEWAL`.trim();
+    document.getElementById('df-name').value = baseName;
+  }, 50);
 }
 
 function renderKanban(deals) {
