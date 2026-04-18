@@ -375,6 +375,16 @@ tbody tr:hover{background:#f5f8fc;}
         <div class="user-avatar" id="user-avatar">?</div>
         <span class="user-email" id="user-email"></span>
       </div>
+      <div style="position:relative;">
+        <button class="logout-btn" id="bell-btn" onclick="toggleNotifications()" style="background:rgba(255,255,255,0.15);position:relative;font-size:16px;padding:6px 12px;" title="Notifications">&#128276;<span id="bell-count" style="display:none;position:absolute;top:-4px;right:-4px;background:#F44336;color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:1px 6px;min-width:18px;text-align:center;">0</span></button>
+        <div id="notif-dropdown" style="display:none;position:absolute;top:42px;right:0;width:340px;max-height:480px;overflow-y:auto;background:#fff;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.18);z-index:2000;color:#1a1a2e;">
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid #f0f0f0;">
+            <strong style="color:#1B3A5C;font-size:14px;">Notifications</strong>
+            <button onclick="markAllNotifsRead()" style="background:none;border:none;color:#1B3A5C;font-size:11px;font-weight:700;cursor:pointer;">Mark all read</button>
+          </div>
+          <div id="notif-list"></div>
+        </div>
+      </div>
       <button class="logout-btn" onclick="openReportsModal()" style="background:rgba(100,181,246,0.25);" title="Reports">&#128202; Reports</button>
       <button class="logout-btn" onclick="signOut()">Sign Out</button>
     </div>
@@ -615,6 +625,8 @@ tbody tr:hover{background:#f5f8fc;}
 let sb; // Supabase client
 let currentUser = null;
 let DEALS = [], FORECASTS = [], ACTUALS = [], ACTIVITIES = [], ADVERTISERS = [], STAGES = [], USER_ROLES = [];
+let NOTIFICATIONS = [];
+let _notifPollTimer = null;
 let currentRole = 'sales_rep'; // resolved on showApp; defaults to sales_rep
 let currentRepName = null;
 let repMyOnly = true; // sales_rep view filter — show only my deals
@@ -712,6 +724,10 @@ async function showApp() {
   document.getElementById('user-avatar').textContent = (currentUser.email||'?')[0].toUpperCase();
   await loadAllData();
   initUI();
+  // Notifications: load + generate now, then poll every 60s
+  await loadNotifications();
+  await checkAndGenerateNotifications();
+  startNotifPolling();
 }
 
 // ===================================================================
@@ -2251,6 +2267,167 @@ async function inlineSaveActivity(dealId) {
 function inlineSetType(type) {
   _inlineActType = type;
   document.querySelectorAll('.iaf-toggle').forEach(b => b.classList.toggle('active', b.dataset.type === type));
+}
+
+// ===================================================================
+// NOTIFICATIONS
+// ===================================================================
+const NOTIF_ICONS = { stalled:'&#9888;', expiring:'&#9203;', new_deal:'&#10024;', closed_won:'&#127881;', closed_lost:'&#10060;', no_activity:'&#128172;' };
+const NOTIF_COLORS = { stalled:'#F44336', expiring:'#FF9800', new_deal:'#2196F3', closed_won:'#4CAF50', closed_lost:'#9E9E9E', no_activity:'#FF9800' };
+
+async function loadNotifications() {
+  if (!currentUser) return;
+  const { data, error } = await sb.from('notifications').select('*')
+    .eq('user_id', currentUser.id)
+    .order('created_at', { ascending: false })
+    .limit(50);
+  if (error) {
+    // Table may not exist yet
+    NOTIFICATIONS = [];
+  } else {
+    NOTIFICATIONS = data || [];
+  }
+  renderNotifications();
+}
+
+async function checkAndGenerateNotifications() {
+  if (!currentUser) return;
+  // Build candidate notifications based on current DEALS state.
+  // Each candidate has a stable dedupe_key so we can skip duplicates.
+  const candidates = [];
+  // Sales lead can see new-deal notifications across the team; others only their own
+  const isLead = currentRole === 'admin' || currentRole === 'sales_lead';
+
+  DEALS.forEach(d => {
+    // For sales reps, filter to own deals only
+    if (currentRole === 'sales_rep' && currentRepName && d.sales_rep !== currentRepName) return;
+
+    if (d.is_stalled) {
+      candidates.push({ type:'stalled', deal_id:d.id, dedupe_key:'stalled:'+d.id+':'+d.stage,
+        message:`"${d.opportunity_name}" stalled at ${d.stage} (${d.days_in_stage}d / ${d.max_days_stall}d max)` });
+    }
+    if (d.fiscal_end && d.stage !== 'Closed Lost' && d.stage !== 'Closed Won') {
+      const days = daysBetween(today, d.fiscal_end);
+      if (days >= 0 && days <= 30) {
+        candidates.push({ type:'expiring', deal_id:d.id, dedupe_key:'expiring30:'+d.id,
+          message:`"${d.opportunity_name}" expires in ${days}d (${dateStr(d.fiscal_end)})` });
+      }
+    }
+    if (d.stage === 'Closed Won' || d.stage === 'Closed Lost') {
+      // Only generate if updated within last 24h
+      if (d.updated_at && daysBetween(d.updated_at, today) <= 1) {
+        candidates.push({ type: d.stage === 'Closed Won' ? 'closed_won' : 'closed_lost', deal_id:d.id,
+          dedupe_key:(d.stage==='Closed Won'?'won:':'lost:')+d.id+':'+d.updated_at,
+          message:`"${d.opportunity_name}" was ${d.stage} (${fmt(d.amount)})` });
+      }
+    }
+    // No activity in 7+ days
+    const lastAct = lastActivityForDeal(d.id);
+    if (d.stage !== 'Closed Won' && d.stage !== 'Closed Lost') {
+      const noneEverDays = d.created_at ? daysBetween(d.created_at, today) : 0;
+      const daysSinceAct = lastAct ? daysBetween(lastAct, today) : noneEverDays;
+      if (daysSinceAct >= 7 && noneEverDays >= 7) {
+        candidates.push({ type:'no_activity', deal_id:d.id, dedupe_key:'noact:'+d.id+':wk'+Math.floor(daysSinceAct/7),
+          message:`"${d.opportunity_name}" has no activity in ${daysSinceAct}d` });
+      }
+    }
+    // New deal alerts go only to leads/admins
+    if (isLead && d.created_at && daysBetween(d.created_at, today) <= 1) {
+      candidates.push({ type:'new_deal', deal_id:d.id, dedupe_key:'new:'+d.id,
+        message:`New deal "${d.opportunity_name}" created by ${d.sales_rep||'unknown rep'}` });
+    }
+  });
+
+  // Find existing dedupe_keys for this user; skip duplicates
+  const existing = new Set(NOTIFICATIONS.map(n => n.dedupe_key).filter(Boolean));
+  const toInsert = candidates.filter(c => !existing.has(c.dedupe_key)).map(c => ({
+    user_id: currentUser.id,
+    type: c.type, message: c.message, deal_id: c.deal_id,
+    is_read: false, dedupe_key: c.dedupe_key
+  }));
+  if (toInsert.length === 0) return;
+  const { error } = await sb.from('notifications').insert(toInsert);
+  if (!error) await loadNotifications();
+}
+
+function renderNotifications() {
+  const unread = NOTIFICATIONS.filter(n => !n.is_read);
+  const badge = document.getElementById('bell-count');
+  if (badge) {
+    badge.textContent = unread.length;
+    badge.style.display = unread.length > 0 ? 'inline-block' : 'none';
+  }
+  const list = document.getElementById('notif-list');
+  if (!list) return;
+  if (NOTIFICATIONS.length === 0) {
+    list.innerHTML = '<div style="padding:24px;text-align:center;color:#888;font-size:13px;">No notifications</div>';
+    return;
+  }
+  list.innerHTML = NOTIFICATIONS.slice(0, 30).map(n => `
+    <div onclick="handleNotifClick('${n.id}','${n.deal_id||''}')" style="display:flex;gap:10px;padding:10px 14px;border-bottom:1px solid #f0f0f0;cursor:pointer;${n.is_read?'opacity:0.55;':'background:#f5f8fc;'}">
+      <div style="font-size:18px;color:${NOTIF_COLORS[n.type]||'#1B3A5C'};flex-shrink:0;line-height:1;">${NOTIF_ICONS[n.type]||'&#9679;'}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:12px;color:#1a1a2e;line-height:1.4;${n.is_read?'':'font-weight:600;'}">${n.message}</div>
+        <div style="font-size:10px;color:#888;margin-top:3px;">${timeAgo(n.created_at)}</div>
+      </div>
+    </div>`).join('');
+}
+
+function timeAgo(iso) {
+  if (!iso) return '';
+  const ms = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return m + 'm ago';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ago';
+  const d = Math.floor(h / 24);
+  return d + 'd ago';
+}
+
+function toggleNotifications() {
+  const el = document.getElementById('notif-dropdown');
+  if (el.style.display === 'none' || !el.style.display) {
+    el.style.display = 'block';
+    setTimeout(() => document.addEventListener('mousedown', _notifOutsideHandler), 50);
+  } else {
+    el.style.display = 'none';
+    document.removeEventListener('mousedown', _notifOutsideHandler);
+  }
+}
+
+function _notifOutsideHandler(e) {
+  const el = document.getElementById('notif-dropdown');
+  const btn = document.getElementById('bell-btn');
+  if (el && !el.contains(e.target) && btn && !btn.contains(e.target)) {
+    el.style.display = 'none';
+    document.removeEventListener('mousedown', _notifOutsideHandler);
+  }
+}
+
+async function handleNotifClick(notifId, dealId) {
+  await sb.from('notifications').update({ is_read: true }).eq('id', notifId);
+  const n = NOTIFICATIONS.find(x => x.id === notifId);
+  if (n) n.is_read = true;
+  renderNotifications();
+  document.getElementById('notif-dropdown').style.display = 'none';
+  if (dealId) showDetail(dealId);
+}
+
+async function markAllNotifsRead() {
+  const unread = NOTIFICATIONS.filter(n => !n.is_read).map(n => n.id);
+  if (unread.length === 0) return;
+  await sb.from('notifications').update({ is_read: true }).in('id', unread);
+  NOTIFICATIONS = NOTIFICATIONS.map(n => ({ ...n, is_read: true }));
+  renderNotifications();
+}
+
+function startNotifPolling() {
+  if (_notifPollTimer) clearInterval(_notifPollTimer);
+  _notifPollTimer = setInterval(async () => {
+    await loadNotifications();
+    await checkAndGenerateNotifications();
+  }, 60000);
 }
 
 // ===================================================================
