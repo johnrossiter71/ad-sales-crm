@@ -313,6 +313,7 @@ tbody tr:hover{background:#f5f8fc;}
     <div class="tab active" data-view="dashboard">Dashboard</div>
     <div class="tab" data-view="pipeline">Pipeline <span class="tab-count" id="tc-pipeline">0</span></div>
     <div class="tab" data-view="forecast">Forecast</div>
+    <div class="tab" data-view="revenue">Revenue</div>
     <div class="tab" data-view="team">Team</div>
     <div class="tab" data-view="activity">Activity</div>
     <div class="tab" data-view="clients">Clients</div>
@@ -379,6 +380,48 @@ tbody tr:hover{background:#f5f8fc;}
     <div class="table-wrap"><table><thead><tr><th>Month</th><th style="text-align:right">Forecast</th><th style="text-align:right">Actual</th><th style="text-align:right">Variance</th><th>Deals</th></tr></thead><tbody id="fc-detail-body"></tbody></table></div>
     <div class="section-header" style="margin-top:24px;"><h2>Revenue Actuals (Landmark)</h2></div>
     <div class="table-wrap"><table><thead><tr><th>Month</th><th>Market</th><th>Platform</th><th>Type</th><th>Tier</th><th style="text-align:right">Booked</th><th style="text-align:right">Billed</th><th style="text-align:right">Collected</th></tr></thead><tbody id="fc-actuals-body"></tbody></table></div>
+  </div>
+
+  <!-- REVENUE -->
+  <div id="revenue" class="view">
+    <div class="section-header"><h2>Landmark Revenue Dashboard</h2></div>
+    <div class="filters">
+      <div class="filter-group"><label>From</label><input type="month" id="rv-from"></div>
+      <div class="filter-group"><label>To</label><input type="month" id="rv-to"></div>
+      <div class="filter-group"><label>Market</label><select id="rv-market"><option value="">All Markets</option><option>Brazil</option><option>Mexico</option><option>Argentina</option><option>Colombia</option></select></div>
+      <div class="filter-group"><label>Platform</label><select id="rv-platform"><option value="">All Platforms</option><option>Linear</option><option>Digital</option></select></div>
+      <button class="filter-clear" onclick="clearRevenueFilters()">Clear All</button>
+    </div>
+    <div class="kpi-row" id="rv-kpis"></div>
+    <div class="chart-grid">
+      <div class="chart-card full-width"><h3>Monthly Revenue Trend (Linear + Digital stacked)</h3><div id="rv-monthly-chart"></div></div>
+    </div>
+    <div class="chart-grid">
+      <div class="chart-card"><h3>Revenue by Market</h3><div id="rv-market-chart"></div></div>
+      <div class="chart-card"><h3>Linear vs Digital Mix Over Time</h3><div id="rv-mix-chart"></div></div>
+    </div>
+    <div class="chart-grid">
+      <div class="chart-card"><h3>Revenue by Daypart</h3><div id="rv-daypart-chart"></div></div>
+      <div class="chart-card"><h3>Revenue by Type (Spots vs Sponsorship)</h3><div id="rv-type-chart"></div></div>
+    </div>
+    <div class="section-header" style="margin-top:24px;"><h2>Top 20 Advertisers by Revenue</h2><div style="font-size:11px;color:#888;">Derived from Closed Won deals + advertiser annual spend (revenue_actuals has no advertiser column)</div></div>
+    <div class="table-wrap"><table><thead><tr>
+      <th data-rv-sort="name">Advertiser</th><th data-rv-sort="market">Market</th>
+      <th data-rv-sort="total" style="text-align:right">Total Revenue</th>
+      <th data-rv-sort="linear" style="text-align:right">Linear</th>
+      <th data-rv-sort="digital" style="text-align:right">Digital</th>
+      <th data-rv-sort="campaigns" style="text-align:right">Campaigns</th>
+      <th data-rv-sort="lastWon">Last Won</th>
+    </tr></thead><tbody id="rv-top-advertisers"></tbody></table></div>
+    <div class="section-header" style="margin-top:24px;"><h2>Account Executive Leaderboard</h2></div>
+    <div class="table-wrap"><table><thead><tr>
+      <th>Rep</th>
+      <th style="text-align:right">Total Revenue</th>
+      <th style="text-align:right">Spots/Won Deals</th>
+      <th style="text-align:right">Advertisers</th>
+      <th style="text-align:right">Linear</th>
+      <th style="text-align:right">Digital</th>
+    </tr></thead><tbody id="rv-ae-leaderboard"></tbody></table></div>
   </div>
 
   <!-- TEAM -->
@@ -632,6 +675,19 @@ function initUI() {
     forecastPlatformFilter = document.getElementById('f-fc-platform').value;
     renderForecast();
   });
+
+  // Revenue tab filter listeners
+  ['rv-from','rv-to','rv-market','rv-platform'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('change', () => {
+      revenueFilter.from = document.getElementById('rv-from').value;
+      revenueFilter.to = document.getElementById('rv-to').value;
+      revenueFilter.market = document.getElementById('rv-market').value;
+      revenueFilter.platform = document.getElementById('rv-platform').value;
+      renderRevenue();
+    });
+  });
   ['f-act-rep','f-act-type','f-act-deal'].forEach(id => {
     document.getElementById(id).addEventListener('change', renderActivity);
   });
@@ -690,6 +746,7 @@ function initUI() {
   renderDashboard();
   renderPipeline();
   renderForecast();
+  renderRevenue();
   renderTeam();
   renderActivity();
   renderClients();
@@ -983,6 +1040,187 @@ function renderForecast() {
       <td><span class="type-badge ${typeClass(a.opportunity_type)}">${a.opportunity_type||''}</span></td>
       <td><span class="tier-badge tier-${a.tier}">${{1:'Anchor',2:'Featured',3:'Programmatic'}[a.tier]||a.tier}</span></td>
       <td class="amount">${fmt(a.booked_revenue)}</td><td class="amount">${fmt(a.billed_revenue)}</td><td class="amount">${fmt(a.collected)}</td></tr>`).join('');
+}
+
+// ===================================================================
+// REVENUE (Landmark dashboard)
+// ===================================================================
+let revenueFilter = { from:'', to:'', market:'', platform:'' };
+let rvSortKey = 'total', rvSortDir = 'desc';
+
+function clearRevenueFilters() {
+  revenueFilter = { from:'', to:'', market:'', platform:'' };
+  ['rv-from','rv-to','rv-market','rv-platform'].forEach(id=>{ const el=document.getElementById(id); if(el)el.value=''; });
+  renderRevenue();
+}
+
+function getFilteredActuals() {
+  return ACTUALS.filter(a => {
+    if (revenueFilter.from && a.month < revenueFilter.from) return false;
+    if (revenueFilter.to && a.month > revenueFilter.to) return false;
+    if (revenueFilter.market && a.market !== revenueFilter.market) return false;
+    if (revenueFilter.platform && a.platform !== revenueFilter.platform) return false;
+    return true;
+  });
+}
+
+function renderRevenue() {
+  const actuals = getFilteredActuals();
+  const totalRev = actuals.reduce((s,a)=>s+(Number(a.booked_revenue)||0),0);
+  const linearRev = actuals.filter(a=>a.platform==='Linear').reduce((s,a)=>s+(Number(a.booked_revenue)||0),0);
+  const digitalRev = actuals.filter(a=>a.platform==='Digital').reduce((s,a)=>s+(Number(a.booked_revenue)||0),0);
+  const linearPct = totalRev>0 ? Math.round(linearRev/totalRev*100) : 0;
+  const digitalPct = totalRev>0 ? 100 - linearPct : 0;
+
+  // Active advertisers: unique advertiser_child from Closed Won deals where flight overlaps the filtered range
+  const wonDeals = DEALS.filter(d => d.stage === 'Closed Won' && (!revenueFilter.market || d.market===revenueFilter.market));
+  const activeAdvertisers = new Set(wonDeals.map(d=>d.advertiser_child).filter(Boolean)).size;
+
+  // Months covered + average monthly
+  const monthsSet = new Set(actuals.map(a=>a.month));
+  const months = [...monthsSet].sort();
+  const avgMonthly = months.length>0 ? totalRev/months.length : 0;
+
+  // Digital growth: latest two months
+  let digitalGrowth = null;
+  if (months.length >= 2) {
+    const last = months[months.length-1], prev = months[months.length-2];
+    const lastDig = actuals.filter(a=>a.month===last && a.platform==='Digital').reduce((s,a)=>s+(Number(a.booked_revenue)||0),0);
+    const prevDig = actuals.filter(a=>a.month===prev && a.platform==='Digital').reduce((s,a)=>s+(Number(a.booked_revenue)||0),0);
+    digitalGrowth = prevDig>0 ? Math.round((lastDig-prevDig)/prevDig*100) : null;
+  }
+  const growthSign = digitalGrowth==null ? '—' : (digitalGrowth>=0?'+':'')+digitalGrowth+'%';
+  const growthColor = digitalGrowth==null ? 'blue' : (digitalGrowth>=0?'green':'red');
+
+  document.getElementById('rv-kpis').innerHTML = `
+    <div class="kpi blue"><div class="kpi-label">Total Revenue YTD</div><div class="kpi-value">${fmtK(totalRev)}</div><div class="kpi-sub">${months.length} months booked</div></div>
+    <div class="kpi teal"><div class="kpi-label">Linear Revenue</div><div class="kpi-value">${fmtK(linearRev)}</div><div class="kpi-sub">${linearPct}% of total</div></div>
+    <div class="kpi orange"><div class="kpi-label">Digital Revenue</div><div class="kpi-value">${fmtK(digitalRev)}</div><div class="kpi-sub">${digitalPct}% of total</div></div>
+    <div class="kpi purple"><div class="kpi-label">Active Advertisers</div><div class="kpi-value">${activeAdvertisers}</div><div class="kpi-sub">From Closed Won deals</div></div>
+    <div class="kpi blue"><div class="kpi-label">Avg Monthly Revenue</div><div class="kpi-value">${fmtK(avgMonthly)}</div><div class="kpi-sub">Across filtered months</div></div>
+    <div class="kpi ${growthColor}"><div class="kpi-label">Digital Growth MoM</div><div class="kpi-value">${growthSign}</div><div class="kpi-sub">Latest vs previous month</div></div>
+  `;
+
+  // Monthly stacked bars (Linear + Digital)
+  const monthly = aggActualsByMonthPlatform(actuals);
+  const maxMonthly = Math.max(1, ...months.map(m=> (monthly[m].Linear+monthly[m].Digital) ));
+  document.getElementById('rv-monthly-chart').innerHTML =
+    `<div style="display:flex;gap:14px;font-size:11px;font-weight:600;color:#555;margin-bottom:10px;">
+      <span><span style="display:inline-block;width:10px;height:10px;background:${PLATFORM_COLORS.Linear};border-radius:2px;margin-right:5px;vertical-align:middle;"></span>Linear</span>
+      <span><span style="display:inline-block;width:10px;height:10px;background:${PLATFORM_COLORS.Digital};border-radius:2px;margin-right:5px;vertical-align:middle;"></span>Digital</span>
+    </div>` +
+    (months.length===0 ? '<div style="text-align:center;padding:24px;color:#888;">No revenue in the selected range</div>' :
+     months.map(m=>{
+        const r = monthly[m];
+        const total = r.Linear + r.Digital;
+        const linW = total>0 ? r.Linear/total*100 : 0;
+        const digW = total>0 ? r.Digital/total*100 : 0;
+        const barPct = Math.max(total/maxMonthly*100, 2);
+        return `<div style="margin-bottom:12px;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:3px;font-size:12px;color:#1B3A5C;font-weight:700;"><span>${m}</span><span>${fmtK(total)}</span></div>
+          <div style="display:flex;height:24px;width:${barPct}%;border-radius:6px;overflow:hidden;background:#f0f2f5;">
+            <div style="width:${linW}%;background:${PLATFORM_COLORS.Linear};display:flex;align-items:center;padding-left:8px;color:#fff;font-size:11px;font-weight:700;">${linW>15?fmtK(r.Linear):''}</div>
+            <div style="width:${digW}%;background:${PLATFORM_COLORS.Digital};display:flex;align-items:center;padding-left:8px;color:#fff;font-size:11px;font-weight:700;">${digW>15?fmtK(r.Digital):''}</div>
+          </div></div>`;
+      }).join(''));
+
+  // Revenue by Market
+  const mktAgg={}; actuals.forEach(a=>{ if(!a.market)return; mktAgg[a.market]=(mktAgg[a.market]||0)+(Number(a.booked_revenue)||0); });
+  renderBarChart('rv-market-chart', Object.entries(mktAgg).sort((a,b)=>b[1]-a[1]).map(([k,v])=>({label:k,value:v,color:MARKET_COLORS[k]||'#607D8B'})));
+
+  // Mix over time (Linear % per month)
+  document.getElementById('rv-mix-chart').innerHTML = months.length===0
+    ? '<div style="text-align:center;padding:24px;color:#888;">No data</div>'
+    : months.map(m=>{
+        const r = monthly[m]; const total = r.Linear + r.Digital;
+        const linPct = total>0 ? Math.round(r.Linear/total*100) : 0;
+        const digPct = 100 - linPct;
+        return `<div style="margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;font-size:11px;font-weight:700;color:#555;margin-bottom:2px;"><span>${m}</span><span>${linPct}% L / ${digPct}% D</span></div>
+          <div style="display:flex;height:14px;border-radius:4px;overflow:hidden;background:#f0f2f5;">
+            <div style="width:${linPct}%;background:${PLATFORM_COLORS.Linear};"></div>
+            <div style="width:${digPct}%;background:${PLATFORM_COLORS.Digital};"></div>
+          </div></div>`;
+      }).join('');
+
+  // Daypart placeholder (revenue_actuals has no daypart column in current schema)
+  document.getElementById('rv-daypart-chart').innerHTML =
+    '<div style="text-align:center;padding:30px 16px;color:#888;font-size:13px;line-height:1.6;">Daypart data is not in the current revenue_actuals schema.<br><span style="font-size:12px;color:#bbb;">Add a <code>daypart</code> column to revenue_actuals to populate this chart.</span></div>';
+
+  // Revenue by Type
+  const typeAgg={}; actuals.forEach(a=>{ const t=a.opportunity_type||'Unspecified'; typeAgg[t]=(typeAgg[t]||0)+(Number(a.booked_revenue)||0); });
+  renderBarChart('rv-type-chart', Object.entries(typeAgg).sort((a,b)=>b[1]-a[1]).map(([k,v])=>({label:k,value:v,color:k==='Spots'?'#00695C':k==='Sponsorship'?'#F57F17':'#999'})));
+
+  // Top advertisers — derived from Closed Won deals (revenue_actuals has no advertiser column)
+  // Linear/Digital split is taken from each deal's platform_mix.
+  const advAgg = {};
+  wonDeals.forEach(d=>{
+    const name = d.advertiser_child;
+    if (!name) return;
+    if (!advAgg[name]) advAgg[name] = { name, market:d.market||'', total:0, linear:0, digital:0, campaigns:0, lastWon:'' };
+    const amt = Number(d.amount)||0;
+    advAgg[name].total += amt;
+    advAgg[name].campaigns += 1;
+    const mix = String(d.platform_mix||'').toLowerCase();
+    const isL = mix.includes('linear'), isD = mix.includes('digital');
+    if (isL && isD) { advAgg[name].linear += amt/2; advAgg[name].digital += amt/2; }
+    else if (isL) { advAgg[name].linear += amt; }
+    else if (isD) { advAgg[name].digital += amt; }
+    else { advAgg[name].linear += amt; }
+    const lw = d.updated_at || d.created_at || '';
+    if (!advAgg[name].lastWon || lw > advAgg[name].lastWon) advAgg[name].lastWon = lw;
+  });
+  let advRows = Object.values(advAgg);
+  advRows.sort((a,b)=>{
+    const dir = rvSortDir==='asc'?1:-1;
+    const av=a[rvSortKey], bv=b[rvSortKey];
+    if (typeof av==='string' && typeof bv==='string') return av.localeCompare(bv)*dir;
+    return ((av||0)-(bv||0))*dir;
+  });
+  document.getElementById('rv-top-advertisers').innerHTML = advRows.slice(0,20).map(r=>`
+    <tr onclick="jumpToClient('${r.name.replace(/'/g,"\\'")}')" style="cursor:pointer">
+      <td><strong>${r.name}</strong></td><td>${r.market}</td>
+      <td class="amount">${fmt(r.total)}</td>
+      <td class="amount">${fmt(r.linear)}</td>
+      <td class="amount">${fmt(r.digital)}</td>
+      <td class="amount">${r.campaigns}</td>
+      <td>${dateStr(r.lastWon)}</td>
+    </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;padding:20px;color:#888;">No Closed Won deals in scope</td></tr>';
+
+  // AE leaderboard
+  const aeAgg = {};
+  wonDeals.forEach(d=>{
+    if (!d.sales_rep) return;
+    if (!aeAgg[d.sales_rep]) aeAgg[d.sales_rep] = { rep:d.sales_rep, total:0, deals:0, advertisers:new Set(), linear:0, digital:0 };
+    const amt = Number(d.amount)||0;
+    aeAgg[d.sales_rep].total += amt;
+    aeAgg[d.sales_rep].deals += 1;
+    if (d.advertiser_child) aeAgg[d.sales_rep].advertisers.add(d.advertiser_child);
+    const mix = String(d.platform_mix||'').toLowerCase();
+    if (mix.includes('linear') && mix.includes('digital')) { aeAgg[d.sales_rep].linear += amt/2; aeAgg[d.sales_rep].digital += amt/2; }
+    else if (mix.includes('linear')) aeAgg[d.sales_rep].linear += amt;
+    else if (mix.includes('digital')) aeAgg[d.sales_rep].digital += amt;
+    else aeAgg[d.sales_rep].linear += amt;
+  });
+  document.getElementById('rv-ae-leaderboard').innerHTML = Object.values(aeAgg).sort((a,b)=>b.total-a.total).map(r=>`
+    <tr><td><strong>${r.rep}</strong></td>
+      <td class="amount">${fmt(r.total)}</td>
+      <td class="amount">${r.deals}</td>
+      <td class="amount">${r.advertisers.size}</td>
+      <td class="amount">${fmt(r.linear)}</td>
+      <td class="amount">${fmt(r.digital)}</td>
+    </tr>`).join('') || '<tr><td colspan="6" style="text-align:center;padding:20px;color:#888;">No data</td></tr>';
+}
+
+function jumpToClient(advertiserName) {
+  // Switch to Clients tab and open detail
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  const clientsTab = document.querySelector('.tab[data-view="clients"]');
+  if (clientsTab) clientsTab.classList.add('active');
+  document.getElementById('clients').classList.add('active');
+  const adv = ADVERTISERS.find(a => a.advertiser_child === advertiserName);
+  if (adv) showClientDetail(adv.id);
 }
 
 // ===================================================================
