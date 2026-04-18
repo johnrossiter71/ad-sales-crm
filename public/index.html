@@ -154,6 +154,20 @@ tbody tr:hover{background:#f5f8fc;}
 .card-footer{display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid #f0f0f0;}
 .card-days{font-size:11px;color:#888;}
 .kanban-empty{text-align:center;padding:24px 12px;color:#bbb;font-size:12px;font-style:italic;}
+.quick-acts{display:flex;gap:4px;align-items:center;margin-top:6px;}
+.quick-act-btn{background:#f0f2f5;border:none;border-radius:6px;width:24px;height:24px;cursor:pointer;font-size:13px;color:#555;display:flex;align-items:center;justify-content:center;transition:all 0.15s;}
+.quick-act-btn:hover{background:#1B3A5C;color:#fff;}
+.no-activity-warn{font-size:10px;color:#FF9800;font-weight:700;margin-left:auto;}
+.quick-popup{position:fixed;background:#fff;border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,0.2);padding:12px;width:280px;z-index:4000;}
+.quick-popup textarea{width:100%;min-height:60px;border:1px solid #ddd;border-radius:6px;padding:6px 8px;font-size:12px;font-family:inherit;}
+.quick-popup .qp-actions{display:flex;justify-content:space-between;align-items:center;margin-top:8px;}
+.quick-popup .qp-type{font-size:12px;font-weight:700;color:#1B3A5C;}
+.inline-act-form{background:#f8f9fa;border-radius:10px;padding:12px;margin-bottom:14px;}
+.inline-act-form .iaf-row{display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap;}
+.iaf-toggle{padding:5px 12px;border:1px solid #ddd;background:#fff;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;color:#555;font-family:inherit;}
+.iaf-toggle.active{background:#1B3A5C;color:#fff;border-color:#1B3A5C;}
+.iaf-date{padding:5px 8px;border:1px solid #ddd;border-radius:8px;font-size:12px;font-family:inherit;}
+.iaf-textarea{width:100%;min-height:50px;border:1px solid #ddd;border-radius:8px;padding:6px 10px;font-size:12px;font-family:inherit;resize:vertical;}
 
 /* ===== CHARTS ===== */
 .chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;}
@@ -1016,13 +1030,22 @@ function renderKanban(deals) {
     return `<div class="kanban-col"><div class="kanban-header" style="background:${STAGE_COLORS[stage]||'#607D8B'}">
       <div>${stage} <span class="col-count">${stageDeals.length}</span></div><div class="col-total">${fmtK(stageTotal)}</div></div>
       <div class="kanban-cards" data-stage="${stage}" ondragover="event.preventDefault();this.classList.add('drag-over')" ondragleave="this.classList.remove('drag-over')" ondrop="handleDrop(event,'${stage}')">
-        ${stageDeals.length===0?'<div class="kanban-empty">No deals</div>':stageDeals.map(d=>`
-          <div class="kanban-card tier-${d.tier}-card ${d.is_stalled?'stalled-card':''}" draggable="true" ondragstart="event.dataTransfer.setData('text/plain','${d.id}');this.classList.add('dragging')" ondragend="this.classList.remove('dragging')" onclick="showDetail('${d.id}')">
+        ${stageDeals.length===0?'<div class="kanban-empty">No deals</div>':stageDeals.map(d=>{
+          const lastAct = lastActivityForDeal(d.id);
+          const noRecent = !lastAct || daysBetween(lastAct, today) > 7;
+          const isClosed = d.stage==='Closed Won'||d.stage==='Closed Lost';
+          return `<div class="kanban-card tier-${d.tier}-card ${d.is_stalled?'stalled-card':''}" draggable="true" ondragstart="event.dataTransfer.setData('text/plain','${d.id}');this.classList.add('dragging')" ondragend="this.classList.remove('dragging')" onclick="showDetail('${d.id}')">
             <div class="card-name">${d.opportunity_name}${d.is_stalled?'<span class="stall-badge">STALLED</span>':''}</div>
             <div class="card-advertiser">${d.advertiser_child||''}</div>
             <div class="card-meta"><span class="card-amount">${fmtK(d.amount)}</span><span class="tier-badge tier-${d.tier}">${{1:'Anchor',2:'Featured',3:'Programmatic'}[d.tier]||''}</span></div>
-            <div class="card-footer"><span class="card-rep">${d.sales_rep||''}</span><span class="card-days ${d.is_stalled?'overdue':''}">${d.stage==='Closed Won'||d.stage==='Closed Lost'?'':d.days_in_stage+'d'}</span></div>
-          </div>`).join('')}
+            ${isClosed?'':`<div class="quick-acts" onclick="event.stopPropagation()">
+              <button class="quick-act-btn" title="Log Call" onclick="openQuickLog(event,'${d.id}','Call')">&#128222;</button>
+              <button class="quick-act-btn" title="Log Email" onclick="openQuickLog(event,'${d.id}','Email')">&#9993;</button>
+              <button class="quick-act-btn" title="Log Meeting" onclick="openQuickLog(event,'${d.id}','Meeting')">&#128197;</button>
+              ${noRecent?'<span class="no-activity-warn" title="No activity in last 7 days">&#9888; STALE</span>':''}
+            </div>`}
+            <div class="card-footer"><span class="card-rep">${d.sales_rep||''}</span><span class="card-days ${d.is_stalled?'overdue':''}">${isClosed?'':d.days_in_stage+'d'}</span></div>
+          </div>`;}).join('')}
       </div></div>`;
   }).join('');
 }
@@ -1455,6 +1478,7 @@ function showClientDetail(advId) {
 function showDetail(id) {
   const d = DEALS.find(x=>x.id===id);
   if(!d) return;
+  _detailDealId = id;
   document.getElementById('search-results').classList.remove('open');
   const dealActs = ACTIVITIES.filter(a=>a.opportunity_id===id).sort((a,b)=>(b.activity_date||'').localeCompare(a.activity_date||''));
   const dealFc = FORECASTS.filter(f=>f.opportunity_id===id).sort((a,b)=>(a.month||'').localeCompare(b.month||''));
@@ -1505,7 +1529,19 @@ function showDetail(id) {
         <table style="font-size:12px;"><thead><tr><th style="background:#2E5F8A;">Month</th><th style="background:#2E5F8A;text-align:right;">Forecast</th><th style="background:#2E5F8A;text-align:right;">Actual</th></tr></thead>
         <tbody>${dealFc.map(f=>'<tr><td style="font-weight:600;">'+f.month+'</td><td class="amount">'+fmt(f.forecast_amount)+'</td><td class="amount">'+(f.actual_amount!=null?fmt(f.actual_amount):'<span style="color:#bbb;">-</span>')+'</td></tr>').join('')}</tbody></table></div></div>`:''}
       <div class="detail-section"><h3>Activity History (${dealActs.length})</h3>
-        ${dealActs.length>0?dealActs.map(a=>`<div class="activity-item type-${(a.activity_type||'').toLowerCase()}"><div class="a-header"><span class="a-type">${a.activity_type||''}</span><span class="a-date">${dateStr(a.activity_date)}</span></div><div class="a-notes">${a.notes||''}</div></div>`).join(''):'<div style="text-align:center;padding:16px;color:#bbb;font-size:12px;">No activities</div>'}
+        <div class="inline-act-form">
+          <div class="iaf-row">
+            <button class="iaf-toggle ${_inlineActType==='Call'?'active':''}" data-type="Call" onclick="inlineSetType('Call')">&#128222; Call</button>
+            <button class="iaf-toggle ${_inlineActType==='Email'?'active':''}" data-type="Email" onclick="inlineSetType('Email')">&#9993; Email</button>
+            <button class="iaf-toggle ${_inlineActType==='Meeting'?'active':''}" data-type="Meeting" onclick="inlineSetType('Meeting')">&#128197; Meeting</button>
+            <input type="date" class="iaf-date" id="iaf-date" value="${today}">
+          </div>
+          <textarea class="iaf-textarea" id="iaf-notes" placeholder="What happened?"></textarea>
+          <div style="display:flex;justify-content:flex-end;margin-top:8px;">
+            <button class="btn-primary" style="font-size:12px;padding:6px 16px;" onclick="inlineSaveActivity('${d.id}')">Save Activity</button>
+          </div>
+        </div>
+        ${dealActs.length>0?dealActs.map(a=>`<div class="activity-item type-${(a.activity_type||'').toLowerCase()}"><div class="a-header"><span class="a-type">${a.activity_type||''}</span><span class="a-date">${dateStr(a.activity_date)}</span></div><div class="a-notes">${a.notes||''}</div></div>`).join(''):'<div style="text-align:center;padding:16px;color:#bbb;font-size:12px;">No activities yet</div>'}
       </div>
       <div style="padding:12px 0;border-top:1px solid #f0f0f0;margin-top:12px;font-size:11px;color:#bbb;text-align:center;">Naming convention: MARKET CLIENT YEAR TYPE [PROGRAM]</div>
     </div>`;
@@ -1833,6 +1869,96 @@ async function saveAdvertiser() {
   document.getElementById('advertiser-modal').classList.remove('open');
   showToast('Advertiser added');
   await loadAllData(); renderClients();
+}
+
+// ===================================================================
+// QUICK ACTIVITY LOG (popup + inline)
+// ===================================================================
+function lastActivityForDeal(dealId) {
+  const acts = ACTIVITIES.filter(a => a.opportunity_id === dealId);
+  if (!acts.length) return null;
+  return acts.map(a => a.activity_date).filter(Boolean).sort().slice(-1)[0];
+}
+
+let _quickPopup = null;
+function openQuickLog(ev, dealId, type) {
+  ev.stopPropagation();
+  closeQuickLog();
+  const rect = ev.currentTarget.getBoundingClientRect();
+  const popup = document.createElement('div');
+  popup.className = 'quick-popup';
+  popup.id = 'quick-popup';
+  popup.style.left = Math.min(rect.left, window.innerWidth - 300) + 'px';
+  popup.style.top = (rect.bottom + 6) + 'px';
+  popup.innerHTML = `
+    <div class="qp-type">${type} · ${today}</div>
+    <textarea id="qp-notes" placeholder="What happened?" autofocus></textarea>
+    <div class="qp-actions">
+      <button class="btn-secondary" style="font-size:11px;padding:4px 10px;" onclick="closeQuickLog()">Cancel</button>
+      <button class="btn-primary" style="font-size:11px;padding:4px 14px;" onclick="quickSave('${dealId}','${type}')">Save</button>
+    </div>`;
+  document.body.appendChild(popup);
+  _quickPopup = popup;
+  setTimeout(()=>document.getElementById('qp-notes').focus(), 50);
+  // Close when clicking outside
+  setTimeout(() => {
+    document.addEventListener('mousedown', _quickPopupHandler);
+  }, 50);
+}
+
+function _quickPopupHandler(e) {
+  const p = document.getElementById('quick-popup');
+  if (p && !p.contains(e.target)) closeQuickLog();
+}
+
+function closeQuickLog() {
+  if (_quickPopup) { _quickPopup.remove(); _quickPopup = null; }
+  document.removeEventListener('mousedown', _quickPopupHandler);
+}
+
+async function quickSave(dealId, type) {
+  const notes = document.getElementById('qp-notes').value || null;
+  const deal = DEALS.find(d => d.id === dealId);
+  const rep = deal ? deal.sales_rep : null;
+  closeQuickLog();
+  const { error } = await sb.from('activities').insert({
+    opportunity_id: dealId, activity_type: type, activity_date: today,
+    sales_rep: rep, notes
+  });
+  if (error) { showToast('Error: '+error.message, 'error'); return; }
+  await sb.from('opportunities').update({ updated_at: new Date().toISOString() }).eq('id', dealId);
+  showToast(type + ' logged');
+  await loadAllData();
+  // Light refresh: re-render whatever's visible
+  if (document.getElementById('pipeline').classList.contains('active')) renderPipeline();
+  if (document.getElementById('detail-overlay').classList.contains('open') && _detailDealId === dealId) showDetail(dealId);
+  if (document.getElementById('dashboard').classList.contains('active')) renderDashboard();
+}
+
+let _detailDealId = null;
+let _inlineActType = 'Call';
+
+async function inlineSaveActivity(dealId) {
+  const type = _inlineActType;
+  const date = document.getElementById('iaf-date').value || today;
+  const notes = document.getElementById('iaf-notes').value || null;
+  const deal = DEALS.find(d => d.id === dealId);
+  const rep = deal ? deal.sales_rep : null;
+  const { error } = await sb.from('activities').insert({
+    opportunity_id: dealId, activity_type: type, activity_date: date,
+    sales_rep: rep, notes
+  });
+  if (error) { showToast('Error: '+error.message, 'error'); return; }
+  await sb.from('opportunities').update({ updated_at: new Date().toISOString() }).eq('id', dealId);
+  document.getElementById('iaf-notes').value = '';
+  showToast(type + ' logged');
+  await loadAllData();
+  showDetail(dealId);
+}
+
+function inlineSetType(type) {
+  _inlineActType = type;
+  document.querySelectorAll('.iaf-toggle').forEach(b => b.classList.toggle('active', b.dataset.type === type));
 }
 
 // ===================================================================
