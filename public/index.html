@@ -1334,6 +1334,7 @@ function showClientDetail(advId) {
       <div class="detail-row"><span class="dl">Primary Contact</span><span class="dv">${adv.primary_contact||''}</span></div>
       <div class="detail-row"><span class="dl">Email</span><span class="dv">${adv.contact_email||''}</span></div>
       <div class="detail-row"><span class="dl">Historical Spend</span><span class="dv">${fmt(adv.historical_annual_spend)}</span></div></div>
+    ${renderRevenueHistorySection(adv.advertiser_child)}
     <div class="detail-section"><h3>Deals (${advDeals.length})</h3>${advDeals.map(d=>`
       <div style="background:#f8f9fa;border-radius:10px;padding:12px;margin-bottom:8px;cursor:pointer;border-left:4px solid ${TIER_COLORS[d.tier]||'#ccc'};" onclick="showDetail('${d.id}')">
         <div style="font-weight:700;font-size:12px;color:#1B3A5C;">${d.opportunity_name}</div>
@@ -1393,6 +1394,7 @@ function showDetail(id) {
         ${d.fiscal_start?'<div class="detail-row"><span class="dl">Flight</span><span class="dv">'+dateStr(d.fiscal_start)+' to '+dateStr(d.fiscal_end)+'</span></div>':''}</div>
       ${d.next_action?`<div class="detail-section"><h3>Next Action</h3><div class="detail-action-box"><div style="font-size:13px;font-weight:600;color:#333;">${d.next_action}</div>${d.next_action_date?'<div style="font-size:12px;color:#888;margin-top:4px;">Due: '+dateStr(d.next_action_date)+'</div>':''}</div></div>`:''}
       ${d.notes?'<div class="detail-section"><h3>Notes</h3><div class="detail-notes">'+d.notes+'</div></div>':''}
+      ${renderRevenueHistorySection(d.advertiser_child)}
       ${dealFc.length>0?`<div class="detail-section"><h3>Monthly Forecast</h3><div style="background:#f8f9fa;border-radius:10px;overflow:hidden;">
         <table style="font-size:12px;"><thead><tr><th style="background:#2E5F8A;">Month</th><th style="background:#2E5F8A;text-align:right;">Forecast</th><th style="background:#2E5F8A;text-align:right;">Actual</th></tr></thead>
         <tbody>${dealFc.map(f=>'<tr><td style="font-weight:600;">'+f.month+'</td><td class="amount">'+fmt(f.forecast_amount)+'</td><td class="amount">'+(f.actual_amount!=null?fmt(f.actual_amount):'<span style="color:#bbb;">-</span>')+'</td></tr>').join('')}</tbody></table></div></div>`:''}
@@ -1725,6 +1727,81 @@ async function saveAdvertiser() {
   document.getElementById('advertiser-modal').classList.remove('open');
   showToast('Advertiser added');
   await loadAllData(); renderClients();
+}
+
+// ===================================================================
+// LANDMARK HISTORY (per advertiser)
+// ===================================================================
+function buildAdvertiserHistory(advertiserName) {
+  if (!advertiserName) return null;
+  const norm = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+  const target = norm(advertiserName);
+  const advRecord = ADVERTISERS.find(a => norm(a.advertiser_child) === target);
+  // Fuzzy fallback: substring either way
+  const matchedDeals = DEALS.filter(d => {
+    const n = norm(d.advertiser_child);
+    return n && (n === target || n.includes(target) || target.includes(n));
+  });
+  const wonDeals = matchedDeals.filter(d => d.stage === 'Closed Won');
+  if (!advRecord && wonDeals.length === 0) return null;
+
+  const totalRev = wonDeals.reduce((s,d)=>s+(Number(d.amount)||0),0);
+  const monthly = {};
+  let linear=0, digital=0;
+  wonDeals.forEach(d => {
+    const month = (d.fiscal_start || d.updated_at || d.created_at || '').slice(0,7);
+    if (month) monthly[month] = (monthly[month]||0) + (Number(d.amount)||0);
+    const mix = String(d.platform_mix||'').toLowerCase();
+    const amt = Number(d.amount)||0;
+    if (mix.includes('linear') && mix.includes('digital')) { linear += amt/2; digital += amt/2; }
+    else if (mix.includes('linear')) linear += amt;
+    else if (mix.includes('digital')) digital += amt;
+    else linear += amt;
+  });
+  const sortedMonths = Object.keys(monthly).sort();
+  const lastMonth = sortedMonths[sortedMonths.length-1] || null;
+  return {
+    advRecord, wonDeals, matchedDeals,
+    totalRev,
+    historicalAnnualSpend: advRecord ? Number(advRecord.historical_annual_spend)||0 : 0,
+    monthly, linear, digital,
+    campaignCount: wonDeals.length,
+    lastActiveMonth: lastMonth
+  };
+}
+
+function renderRevenueHistorySection(advertiserName) {
+  const hist = buildAdvertiserHistory(advertiserName);
+  if (!hist) return '';
+  const months = Object.keys(hist.monthly).sort();
+  const max = Math.max(1, ...months.map(m => hist.monthly[m]));
+  // Mini bar sparkline
+  const spark = months.length === 0 ? '<span style="color:#bbb;font-size:12px;">No closed deals</span>' :
+    `<div style="display:flex;gap:3px;align-items:flex-end;height:48px;margin-top:4px;">${months.map(m => {
+      const h = Math.max((hist.monthly[m]/max)*48, 3);
+      return `<div title="${m}: ${fmt(hist.monthly[m])}" style="width:14px;height:${h}px;background:#1B3A5C;border-radius:2px;"></div>`;
+    }).join('')}</div>
+    <div style="display:flex;justify-content:space-between;font-size:10px;color:#888;margin-top:4px;"><span>${months[0]||''}</span><span>${months[months.length-1]||''}</span></div>`;
+
+  const total = hist.linear + hist.digital;
+  const linPct = total>0 ? Math.round(hist.linear/total*100) : 0;
+  const digPct = 100 - linPct;
+  const mixBar = total === 0 ? '' :
+    `<div style="display:flex;height:10px;border-radius:4px;overflow:hidden;background:#f0f2f5;margin-top:4px;">
+      <div style="width:${linPct}%;background:${PLATFORM_COLORS.Linear};" title="Linear ${fmt(hist.linear)}"></div>
+      <div style="width:${digPct}%;background:${PLATFORM_COLORS.Digital};" title="Digital ${fmt(hist.digital)}"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:11px;color:#666;margin-top:3px;"><span>Linear ${linPct}% (${fmtK(hist.linear)})</span><span>Digital ${digPct}% (${fmtK(hist.digital)})</span></div>`;
+
+  return `<div class="detail-section"><h3>&#128202; Historical Revenue</h3>
+    <div class="detail-row"><span class="dl">Total Closed Won Revenue</span><span class="dv" style="color:#1B3A5C;">${fmt(hist.totalRev)}</span></div>
+    ${hist.historicalAnnualSpend ? '<div class="detail-row"><span class="dl">Historical Annual Spend</span><span class="dv">'+fmt(hist.historicalAnnualSpend)+'</span></div>' : ''}
+    <div class="detail-row"><span class="dl">Historical Campaigns</span><span class="dv">${hist.campaignCount}</span></div>
+    <div class="detail-row"><span class="dl">Last Active Month</span><span class="dv">${hist.lastActiveMonth||'—'}</span></div>
+    <div style="margin-top:10px;font-size:11px;font-weight:700;color:#888;text-transform:uppercase;">Monthly Spend</div>
+    ${spark}
+    ${total>0 ? '<div style="margin-top:10px;font-size:11px;font-weight:700;color:#888;text-transform:uppercase;">Linear vs Digital</div>'+mixBar : ''}
+  </div>`;
 }
 
 // ===================================================================
