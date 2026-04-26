@@ -1938,8 +1938,20 @@ function renderRevenue() {
   const growthSign = digitalGrowth==null ? '—' : (digitalGrowth>=0?'+':'')+digitalGrowth+'%';
   const growthColor = digitalGrowth==null ? 'blue' : (digitalGrowth>=0?'green':'red');
 
+  // Unmatched revenue: actuals that have no landmark_campaign_id matching any deal,
+  // AND no advertiser_name matching any Closed Won deal advertiser.
+  const dealLandmarkIds = new Set(DEALS.map(d=>d.landmark_campaign_id).filter(Boolean).map(String));
+  const advNames = new Set(DEALS.filter(d=>d.stage==='Closed Won').map(d=>String(d.advertiser_child||'').toLowerCase()).filter(Boolean));
+  const unmatched = actuals.filter(a => {
+    if (a.landmark_campaign_id && dealLandmarkIds.has(String(a.landmark_campaign_id))) return false;
+    if (a.advertiser_name && advNames.has(String(a.advertiser_name).toLowerCase())) return false;
+    return true;
+  });
+  const unmatchedRev = unmatched.reduce((s,a)=>s+(Number(a.booked_revenue)||0),0);
+
   document.getElementById('rv-kpis').innerHTML = `
     <div class="kpi blue"><div class="kpi-label">Total Revenue YTD</div><div class="kpi-value">${fmtK(totalRev)}</div><div class="kpi-sub">${months.length} months booked</div></div>
+    ${unmatchedRev>0?`<div class="kpi orange"><div class="kpi-label">Unmatched Revenue</div><div class="kpi-value">${fmtK(unmatchedRev)}</div><div class="kpi-sub">${unmatched.length} rows · link Landmark IDs to deals</div></div>`:''}
     <div class="kpi teal"><div class="kpi-label">Linear Revenue</div><div class="kpi-value">${fmtK(linearRev)}</div><div class="kpi-sub">${linearPct}% of total</div></div>
     <div class="kpi orange"><div class="kpi-label">Digital Revenue</div><div class="kpi-value">${fmtK(digitalRev)}</div><div class="kpi-sub">${digitalPct}% of total</div></div>
     <div class="kpi purple"><div class="kpi-label">Active Advertisers</div><div class="kpi-value">${activeAdvertisers}</div><div class="kpi-sub">From Closed Won deals</div></div>
@@ -2248,7 +2260,12 @@ function showDetail(id) {
         <div class="detail-row"><span class="dl">Sales Rep</span><span class="dv">${d.sales_rep||''}</span></div>
         <div class="detail-row"><span class="dl">Business Type</span><span class="dv">${d.business_type||''}</span></div>
         <div class="detail-row"><span class="dl">Opportunity Age</span><span class="dv">${d.opp_age} days</span></div>
-        <div class="detail-row"><span class="dl">Days at Stage</span><span class="dv ${d.is_stalled?'overdue':''}">${d.days_in_stage}d${d.max_days_stall?' / '+d.max_days_stall+'d max':''}</span></div></div>
+        <div class="detail-row"><span class="dl">Days at Stage</span><span class="dv ${d.is_stalled?'overdue':''}">${d.days_in_stage}d${d.max_days_stall?' / '+d.max_days_stall+'d max':''}</span></div>
+        <div class="detail-row"><span class="dl">Landmark Campaign ID</span><span class="dv">${d.landmark_campaign_id||'<span style="color:#bbb;">—</span>'}</span></div>
+        ${d.local_currency&&d.local_amount?`<div class="detail-row"><span class="dl">Local Amount</span><span class="dv">${formatLocalAmount(d.local_amount, d.local_currency)} ${d.local_currency}</span></div>`:''}
+        ${d.exchange_rate?`<div class="detail-row"><span class="dl">Exchange Rate</span><span class="dv">1 USD = ${d.exchange_rate} ${d.local_currency||''} ${d.exchange_rate_date?'('+dateStr(d.exchange_rate_date)+')':''}</span></div>`:''}
+      </div>
+      ${(d.stage==='Closed (No Order Yet)' || d.stage==='Closed Won') && !d.landmark_campaign_id ? `<div style="background:#FFF8E1;border-left:4px solid #FF9800;padding:10px 14px;border-radius:6px;margin-bottom:14px;font-size:12px;color:#E65100;font-weight:600;">&#9888; Enter the Landmark Campaign ID to enable actuals tracking</div>`:''}
       ${renderApprovalSection(d)}
       ${(d.secondary_owner||d.planner||d.yield_contact||d.bpi_contact)?`<div class="detail-section"><h3>Deal Team</h3>
         ${d.sales_rep?`<div class="detail-row"><span class="dl">Primary Owner (AE)</span><span class="dv">${d.sales_rep}</span></div>`:''}
@@ -2376,6 +2393,21 @@ function renderDealForm(deal) {
         <div class="form-group"><label>Next Action</label><input type="text" id="df-action" value="${isEdit?deal.next_action||'':''}"></div>
         <div class="form-group"><label>Next Action Date</label><input type="date" id="df-action-date" value="${isEdit&&deal.next_action_date?dateStr(deal.next_action_date):''}"></div>
       </div>
+      <div class="form-row">
+        <div class="form-group"><label>Landmark Campaign ID</label><input type="text" id="df-landmark" value="${isEdit?deal.landmark_campaign_id||'':''}" placeholder="Enter once Traffic creates the campaign"></div>
+        <div class="form-group"></div>
+      </div>
+      <div style="background:#f8f9fa;border-radius:10px;padding:14px;margin-bottom:16px;border-left:4px solid #00695C;">
+        <div style="font-weight:700;color:#00695C;font-size:13px;margin-bottom:10px;">Currency &amp; Exchange Rate</div>
+        <div class="form-row">
+          <div class="form-group"><label>Local Currency</label><input type="text" id="df-local-currency" value="${isEdit?deal.local_currency||'':''}" placeholder="BRL, MXN, ARS..."></div>
+          <div class="form-group"><label>Local Amount</label><input type="number" id="df-local-amount" value="${isEdit?deal.local_amount||'':''}" min="0" step="100" oninput="recalcUsdFromLocal()"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Exchange Rate (1 USD = ? local)</label><input type="number" id="df-fx-rate" value="${isEdit?deal.exchange_rate||'':''}" step="0.0001" min="0" oninput="recalcUsdFromLocal()"></div>
+          <div class="form-group"><label>FX Rate Date</label><input type="date" id="df-fx-date" value="${isEdit&&deal.exchange_rate_date?dateStr(deal.exchange_rate_date):today}"></div>
+        </div>
+      </div>
       <div class="form-row full"><div class="form-group"><label>Notes</label><textarea id="df-notes">${isEdit?deal.notes||'':''}</textarea></div></div>
     </div>
     <div class="modal-footer">
@@ -2403,6 +2435,25 @@ function onMarketChangeForCurrency() {
     const c = getMarketCurrency(market);
     if (c) currencyEl.value = c;
   }
+}
+
+function recalcUsdFromLocal() {
+  const local = parseFloat((document.getElementById('df-local-amount')||{}).value)||0;
+  const rate = parseFloat((document.getElementById('df-fx-rate')||{}).value)||0;
+  if (local > 0 && rate > 0) {
+    const usd = Math.round(local / rate);
+    const usdEl = document.getElementById('df-amount');
+    if (usdEl && !usdEl.dataset.userEdited) {
+      usdEl.value = usd;
+      autoTier();
+    }
+  }
+}
+
+const CURRENCY_SYMBOLS = { USD:'$', BRL:'R$', MXN:'MX$', ARS:'AR$', COP:'COL$', CLP:'CLP$', PEN:'S/', DOP:'RD$' };
+function formatLocalAmount(amount, code) {
+  const sym = CURRENCY_SYMBOLS[code] || (code+' ');
+  return sym + Math.round(amount||0).toLocaleString('en-US');
 }
 
 function suggestName() {
@@ -2531,6 +2582,11 @@ async function saveDeal(id) {
     planner: (document.getElementById('df-planner')||{}).value || null,
     yield_contact: (document.getElementById('df-yield')||{}).value || null,
     bpi_contact: type === 'Sponsorship' ? ((document.getElementById('df-bpi')||{}).value || null) : null,
+    landmark_campaign_id: (document.getElementById('df-landmark')||{}).value || null,
+    local_currency: (document.getElementById('df-local-currency')||{}).value || null,
+    local_amount: parseFloat((document.getElementById('df-local-amount')||{}).value) || null,
+    exchange_rate: parseFloat((document.getElementById('df-fx-rate')||{}).value) || null,
+    exchange_rate_date: (document.getElementById('df-fx-date')||{}).value || null,
   };
 
   let result;
@@ -3526,6 +3582,24 @@ function reportStalled() {
 // ===================================================================
 // LANDMARK HISTORY (per advertiser)
 // ===================================================================
+// Build deal history matched by Landmark campaign ID first, fallback to fuzzy advertiser name
+function buildDealActuals(deal) {
+  if (!deal) return [];
+  if (deal.landmark_campaign_id) {
+    return ACTUALS.filter(a => a.landmark_campaign_id && String(a.landmark_campaign_id) === String(deal.landmark_campaign_id));
+  }
+  // Fallback to fuzzy advertiser_name match on actuals
+  if (deal.advertiser_child) {
+    const norm = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+    const target = norm(deal.advertiser_child);
+    return ACTUALS.filter(a => {
+      const n = norm(a.advertiser_name);
+      return n && (n === target || n.includes(target) || target.includes(n));
+    });
+  }
+  return [];
+}
+
 function buildAdvertiserHistory(advertiserName) {
   if (!advertiserName) return null;
   const norm = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
