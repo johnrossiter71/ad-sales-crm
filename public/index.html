@@ -449,7 +449,7 @@ tbody tr:hover{background:#f5f8fc;}
     </div>
     <div id="pipeline-kanban" class="kanban"></div>
     <div id="pipeline-table" style="display:none;"><div class="table-wrap"><table><thead><tr>
-      <th>Opportunity</th><th>Advertiser</th><th>Market</th><th>Rep</th><th>Type</th><th>Tier</th><th>Stage</th><th style="text-align:right">Amount</th><th style="text-align:right">Weighted</th><th>Age</th><th>Days@Stage</th><th>Next Action</th>
+      <th>Opportunity</th><th>Advertiser</th><th>Market</th><th>Rep</th><th>Type</th><th>Tier</th><th>Stage</th><th style="text-align:right">Amount</th><th style="text-align:right">Weighted</th><th>Age</th><th>Days@Stage</th><th>Files</th><th>Next Action</th>
     </tr></thead><tbody id="pipeline-tbody"></tbody></table></div></div>
     <div id="pipeline-programmatic" style="display:none;">
       <div class="kpi-row" id="prog-kpis"></div>
@@ -1702,9 +1702,13 @@ function renderKanban(deals) {
           const lastAct = lastActivityForDeal(d.id);
           const noRecent = !lastAct || daysBetween(lastAct, today) > 7;
           const isClosed = d.stage==='Closed Won'||d.stage==='Closed Lost';
+          const attCount = DEAL_ATTACHMENTS.filter(a => a.opportunity_id === d.id).length;
+          const apprBadge = d.approval_status==='pending' ? '<span title="Pending approval" style="color:#FF9800;">&#9202;</span>'
+                          : d.approval_status==='approved' ? '<span title="Approved" style="color:#4CAF50;">&#10003;</span>'
+                          : d.approval_status==='rejected' ? '<span title="Rejected" style="color:#F44336;">&#10006;</span>' : '';
           return `<div class="kanban-card tier-${d.tier}-card ${d.is_stalled?'stalled-card':''}" draggable="true" ondragstart="event.dataTransfer.setData('text/plain','${d.id}');this.classList.add('dragging')" ondragend="this.classList.remove('dragging')" onclick="showDetail('${d.id}')">
-            <div class="card-name">${d.opportunity_name}${d.is_stalled?'<span class="stall-badge">STALLED</span>':''}</div>
-            <div class="card-advertiser">${d.advertiser_child||''}</div>
+            <div class="card-name">${d.opportunity_name}${d.is_stalled?'<span class="stall-badge">STALLED</span>':''}${apprBadge?' '+apprBadge:''}</div>
+            <div class="card-advertiser">${d.advertiser_child||''}${attCount>0?' <span title="'+attCount+' attachment'+(attCount===1?'':'s')+'" style="color:#888;font-size:11px;">&#128206; '+attCount+'</span>':''}</div>
             <div class="card-meta"><span class="card-amount">${fmtK(d.amount)}</span><span class="tier-badge tier-${d.tier}">${{1:'Anchor',2:'Featured',3:'Programmatic'}[d.tier]||''}</span></div>
             ${isClosed?'':`<div class="quick-acts" onclick="event.stopPropagation()">
               <button class="quick-act-btn" title="Log Call" onclick="openQuickLog(event,'${d.id}','Call')">&#128222;</button>
@@ -1752,6 +1756,7 @@ function renderPipelineTable(deals) {
       <td data-mlabel="Weighted" class="amount">${fmt(d.weighted)}</td>
       <td data-mlabel="Age">${d.stage==='Closed Won'||d.stage==='Closed Lost'?'-':d.opp_age+'d'}</td>
       <td data-mlabel="Days@Stage" class="${d.is_stalled?'overdue':''}">${d.stage==='Closed Won'||d.stage==='Closed Lost'?'-':d.days_in_stage+'d'}</td>
+      <td data-mlabel="Files">${(()=>{const c=DEAL_ATTACHMENTS.filter(a=>a.opportunity_id===d.id).length;return c?'&#128206; '+c:'-';})()}</td>
       <td data-mlabel="Next Action" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${d.next_action||'-'}</td>
     </tr>`).join('');
 }
@@ -2243,6 +2248,8 @@ function showDetail(id) {
         </div>
         ${dealActs.length>0?dealActs.map(a=>`<div class="activity-item type-${(a.activity_type||'').toLowerCase()}"><div class="a-header"><span class="a-type">${a.activity_type||''}</span><span class="a-date">${dateStr(a.activity_date)}</span></div><div class="a-notes">${a.notes||''}</div></div>`).join(''):'<div style="text-align:center;padding:16px;color:#bbb;font-size:12px;">No activities yet</div>'}
       </div>
+      ${renderAttachmentsSection(d)}
+      ${renderScheduleLinesSection(d)}
       <div style="padding:12px 0;border-top:1px solid #f0f0f0;margin-top:12px;font-size:11px;color:#bbb;text-align:center;">Naming convention: MARKET CLIENT YEAR TYPE [PROGRAM]</div>
     </div>`;
   document.getElementById('detail-overlay').classList.add('open');
@@ -2600,6 +2607,102 @@ async function saveAdvertiser() {
   document.getElementById('advertiser-modal').classList.remove('open');
   showToast('Advertiser added');
   await loadAllData(); renderClients();
+}
+
+// ===================================================================
+// FILE ATTACHMENTS (per deal)
+// ===================================================================
+const FILE_TYPE_LABELS = { rate_card:'Rate Card', proposal:'Proposal', presentation:'Presentation', contract:'Contract', other:'Other' };
+const FILE_TYPE_COLORS = { rate_card:'#1565C0', proposal:'#7B1FA2', presentation:'#E65100', contract:'#2E7D32', other:'#607D8B' };
+
+function fmtBytes(b) { if (!b) return '—'; if (b<1024) return b+' B'; if (b<1048576) return (b/1024).toFixed(1)+' KB'; return (b/1048576).toFixed(1)+' MB'; }
+
+function renderAttachmentsSection(deal) {
+  const atts = DEAL_ATTACHMENTS.filter(a => a.opportunity_id === deal.id);
+  // Workflow warnings for Negotiation+ stages
+  const stageIdx = STAGE_ORDER.indexOf(deal.stage);
+  const negIdx = STAGE_ORDER.indexOf('Negotiation');
+  const inOrPastNegotiation = stageIdx >= negIdx && deal.stage !== 'Closed Lost';
+  const warnings = [];
+  if (inOrPastNegotiation) {
+    if (deal.opportunity_type === 'Spots' && !atts.find(a=>a.file_type==='rate_card')) warnings.push('Missing rate card');
+    if (!atts.find(a=>a.file_type==='proposal')) warnings.push('Missing proposal');
+    if (deal.opportunity_type === 'Sponsorship' && !atts.find(a=>a.file_type==='presentation')) warnings.push('Missing presentation');
+  }
+  const grouped = {};
+  atts.forEach(a => { if (!grouped[a.file_type]) grouped[a.file_type] = []; grouped[a.file_type].push(a); });
+  const groupRows = Object.keys(FILE_TYPE_LABELS).map(k => {
+    const list = grouped[k] || [];
+    if (list.length === 0) return '';
+    return `<div style="margin-bottom:10px;">
+      <div style="font-size:11px;font-weight:700;color:${FILE_TYPE_COLORS[k]};text-transform:uppercase;margin-bottom:4px;">${FILE_TYPE_LABELS[k]} (${list.length})</div>
+      ${list.map(a => `<div style="background:#f8f9fa;border-radius:8px;padding:8px 12px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;gap:8px;">
+        <div style="flex:1;min-width:0;">
+          <a href="${a.file_url}" target="_blank" rel="noopener" style="font-weight:600;color:#1B3A5C;font-size:12px;text-decoration:none;">&#128206; ${a.file_name}</a>
+          <div style="font-size:10px;color:#888;">${fmtBytes(a.file_size)} · ${a.uploaded_by||'unknown'} · ${dateStr(a.created_at)}</div>
+        </div>
+        <button class="btn-danger" style="font-size:10px;padding:3px 6px;" onclick="deleteAttachment('${a.id}','${deal.id}')">×</button>
+      </div>`).join('')}
+    </div>`;
+  }).filter(Boolean).join('');
+  return `<div class="detail-section"><h3>Attachments (${atts.length})</h3>
+    ${warnings.length?`<div style="background:#FFF8E1;border-left:4px solid #FF9800;padding:8px 12px;border-radius:6px;margin-bottom:10px;font-size:12px;color:#E65100;">&#9888; ${warnings.join(' · ')}</div>`:''}
+    ${groupRows||'<div style="text-align:center;padding:12px;color:#bbb;font-size:12px;">No attachments yet</div>'}
+    <div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap;">
+      <select id="att-type-${deal.id}" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px;">
+        ${Object.entries(FILE_TYPE_LABELS).map(([k,l])=>`<option value="${k}">${l}</option>`).join('')}
+      </select>
+      <input type="file" id="att-file-${deal.id}" style="font-size:12px;">
+      <button class="btn-primary" style="font-size:11px;padding:6px 12px;" onclick="uploadAttachment('${deal.id}')">Upload</button>
+    </div>
+  </div>`;
+}
+
+async function uploadAttachment(dealId) {
+  const fileInput = document.getElementById('att-file-'+dealId);
+  const typeSel = document.getElementById('att-type-'+dealId);
+  if (!fileInput || !fileInput.files[0]) { showToast('Pick a file first','error'); return; }
+  const file = fileInput.files[0];
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('opportunity_id', dealId);
+  showToast('Uploading...');
+  try {
+    const res = await fetch('/api/upload', { method: 'POST', body: fd });
+    const json = await res.json();
+    if (!res.ok) { showToast('Upload failed: '+(json.error||res.status),'error'); return; }
+    const { error } = await sb.from('deal_attachments').insert({
+      opportunity_id: dealId,
+      file_type: typeSel.value,
+      file_name: json.name,
+      file_url: json.url,
+      file_size: json.size,
+      uploaded_by: currentUser ? currentUser.email : null
+    });
+    if (error) { showToast('Save failed: '+error.message,'error'); return; }
+    showToast('Uploaded');
+    await loadAllData();
+    showDetail(dealId);
+  } catch (e) {
+    showToast('Upload error: '+e.message,'error');
+  }
+}
+
+async function deleteAttachment(id, dealId) {
+  if (!confirm('Delete this attachment?')) return;
+  const { error } = await sb.from('deal_attachments').delete().eq('id', id);
+  if (error) { showToast('Error: '+error.message,'error'); return; }
+  showToast('Attachment removed');
+  await loadAllData();
+  showDetail(dealId);
+}
+
+// Schedule lines stub — implemented in Improvement 7
+function renderScheduleLinesSection(deal) {
+  const lines = SCHEDULE_LINES.filter(l => l.opportunity_id === deal.id);
+  const probPct = (deal.probability||0)*100;
+  if (lines.length === 0 && probPct < 75) return '';
+  return typeof renderScheduleLinesUI === 'function' ? renderScheduleLinesUI(deal, lines) : '';
 }
 
 // ===================================================================
