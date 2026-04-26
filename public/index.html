@@ -440,7 +440,7 @@ tbody tr:hover{background:#f5f8fc;}
     <div class="filters" id="pipeline-filters">
       <div class="filter-group"><label>Stage</label><select id="f-stage"><option value="">All Stages</option></select></div>
       <div class="filter-group"><label>Tier</label><select id="f-tier"><option value="">All Tiers</option><option value="1">Tier 1 — Anchor</option><option value="2">Tier 2 — Featured</option><option value="3">Tier 3 — Programmatic</option></select></div>
-      <div class="filter-group"><label>Market</label><select id="f-market"><option value="">All Markets</option><option value="Brazil">Brazil</option><option value="Mexico">Mexico</option><option value="Argentina">Argentina</option><option value="Colombia">Colombia</option></select></div>
+      <div class="filter-group"><label>Market</label><select id="f-market"><option value="">All Markets</option></select></div>
       <div class="filter-group"><label>Rep</label><select id="f-rep"><option value="">All Reps</option></select></div>
       <div class="filter-group"><label>Type</label><select id="f-type"><option value="">All Types</option><option value="Spots">Spots</option><option value="Sponsorship">Sponsorship</option></select></div>
       <div class="filter-group"><label>Platform</label><select id="f-platform"><option value="">All Platforms</option><option value="Linear">Linear</option><option value="Digital">Digital</option></select></div>
@@ -505,7 +505,7 @@ tbody tr:hover{background:#f5f8fc;}
     <div class="filters">
       <div class="filter-group"><label>From</label><input type="month" id="rv-from"></div>
       <div class="filter-group"><label>To</label><input type="month" id="rv-to"></div>
-      <div class="filter-group"><label>Market</label><select id="rv-market"><option value="">All Markets</option><option>Brazil</option><option>Mexico</option><option>Argentina</option><option>Colombia</option></select></div>
+      <div class="filter-group"><label>Market</label><select id="rv-market"><option value="">All Markets</option></select></div>
       <div class="filter-group"><label>Platform</label><select id="rv-platform"><option value="">All Platforms</option><option>Linear</option><option>Digital</option></select></div>
       <button class="filter-clear" onclick="clearRevenueFilters()">Clear All</button>
     </div>
@@ -690,6 +690,26 @@ function totalsByPlatform(actuals) {
 }
 let pipelineMode = 'kanban';
 
+const FALLBACK_MARKETS = [
+  { market_name:'Brazil', region:'South America', currency:'BRL', is_active:true, sort_order:1 },
+  { market_name:'Mexico', region:'North America', currency:'MXN', is_active:true, sort_order:2 },
+  { market_name:'Argentina', region:'South America', currency:'ARS', is_active:true, sort_order:3 },
+  { market_name:'Colombia', region:'South America', currency:'COP', is_active:true, sort_order:4 }
+];
+function getActiveMarkets() {
+  const rows = MARKETS && MARKETS.length ? MARKETS : FALLBACK_MARKETS;
+  return rows.filter(m => m.is_active !== false).sort((a,b)=>(a.sort_order||0)-(b.sort_order||0));
+}
+function getMarketCurrency(name) {
+  const rows = MARKETS && MARKETS.length ? MARKETS : FALLBACK_MARKETS;
+  const m = rows.find(x => x.market_name === name);
+  return m ? m.currency : null;
+}
+function getMarketAbbr(name) {
+  const map = {Brazil:'BRA',Mexico:'MEX',Argentina:'ARG',Colombia:'COL',Chile:'CHL',Peru:'PER',Ecuador:'ECU',Panama:'PAN',Miami:'MIA','Dominican Republic':'DOM','Central America':'CAM'};
+  return map[name] || (name||'').slice(0,3).toUpperCase();
+}
+
 const STAGE_ORDER = ['Initial Contact','Negotiation','Close to Close','Closed (No Order Yet)','Closed Won','Closed Lost'];
 const STAGE_COLORS = {'Initial Contact':'#5C6BC0','Negotiation':'#7B1FA2','Close to Close':'#E65100','Closed (No Order Yet)':'#2E7D32','Closed Won':'#1B5E20','Closed Lost':'#B71C1C'};
 const TIER_COLORS = {1:'#1565C0',2:'#7B1FA2',3:'#E65100'};
@@ -852,6 +872,10 @@ function initUI() {
   const reps = [...new Set(DEALS.map(d=>d.sales_rep).filter(Boolean))].sort();
   populateSelect('f-rep', reps);
   populateSelect('f-act-rep', reps);
+  // Populate market dropdowns from MARKETS table (with fallback)
+  const marketNames = getActiveMarkets().map(m => m.market_name);
+  populateSelect('f-market', marketNames);
+  populateSelect('rv-market', marketNames);
   const dealNames = [...new Set(DEALS.map(d=>d.opportunity_name).filter(Boolean))].sort();
   populateSelect('f-act-deal', dealNames);
   const stages = [...new Set(DEALS.map(d=>d.stage).filter(Boolean))];
@@ -1660,7 +1684,7 @@ function createRenewal(dealId) {
     if (d.contact_name) document.getElementById('df-contact').value = d.contact_name;
     // Suggest a renewal name
     const yr = new Date().getFullYear() + 1;
-    const abbr = {Brazil:'BRA',Mexico:'MEX',Argentina:'ARG',Colombia:'COL'}[d.market]||'';
+    const abbr = getMarketAbbr(d.market);
     const baseName = `${abbr} ${(d.advertiser_child||'').toUpperCase()} ${yr} ${(d.opportunity_type||'').toUpperCase()} RENEWAL`.trim();
     document.getElementById('df-name').value = baseName;
   }, 50);
@@ -2252,7 +2276,7 @@ function renderDealForm(deal) {
         <div class="helper">Format: MARKET CLIENT YEAR TYPE [PROGRAM] — e.g., BRA COCA COLA 2026 SPONSORSHIP THE VOICE</div>
         <div class="name-suggestion" id="name-suggestion" onclick="document.getElementById('df-name').value=this.textContent"></div></div></div>
       <div class="form-row">
-        <div class="form-group"><label>Market <span class="req">*</span></label><select id="df-market" onchange="suggestName()"><option value="">Select...</option><option ${isEdit&&deal.market==='Brazil'?'selected':''}>Brazil</option><option ${isEdit&&deal.market==='Mexico'?'selected':''}>Mexico</option><option ${isEdit&&deal.market==='Argentina'?'selected':''}>Argentina</option><option ${isEdit&&deal.market==='Colombia'?'selected':''}>Colombia</option></select></div>
+        <div class="form-group"><label>Market <span class="req">*</span></label><select id="df-market" onchange="suggestName();onMarketChangeForCurrency()"><option value="">Select...</option>${getActiveMarkets().map(m=>`<option ${isEdit&&deal.market===m.market_name?'selected':''}>${m.market_name}</option>`).join('')}</select></div>
         <div class="form-group"><label>Sales Rep <span class="req">*</span></label><select id="df-rep"><option value="">Select...</option>${reps.map(r=>`<option ${isEdit&&deal.sales_rep===r?'selected':''}>${r}</option>`).join('')}</select></div>
       </div>
       <div class="form-row">
@@ -2324,12 +2348,21 @@ function toggleBpiVisibility() {
   if (bpiGroup) bpiGroup.style.display = type === 'Sponsorship' ? '' : 'none';
 }
 
+function onMarketChangeForCurrency() {
+  const market = document.getElementById('df-market').value;
+  const currencyEl = document.getElementById('df-local-currency');
+  if (currencyEl && market) {
+    const c = getMarketCurrency(market);
+    if (c) currencyEl.value = c;
+  }
+}
+
 function suggestName() {
   const market = document.getElementById('df-market').value;
   const advertiser = document.getElementById('df-advertiser').value;
   const type = document.getElementById('df-type').value;
   if (market && advertiser && type) {
-    const abbr = {Brazil:'BRA',Mexico:'MEX',Argentina:'ARG',Colombia:'COL'}[market]||market.substring(0,3).toUpperCase();
+    const abbr = getMarketAbbr(market);
     const name = `${abbr} ${advertiser.toUpperCase()} 2026 ${type.toUpperCase()}`;
     const el = document.getElementById('name-suggestion');
     el.textContent = name;
@@ -3438,7 +3471,8 @@ function validateImport() {
     const mkH = Object.keys(m).find(k => m[k] === 'market');
     if (mkH) {
       const v = String(row[headerToIdx[mkH]]||'').trim();
-      if (v && !['Brazil','Mexico','Argentina','Colombia'].includes(v)) errs.push('unknown market "'+v+'"');
+      const valid = getActiveMarkets().map(x=>x.market_name);
+      if (v && !valid.includes(v)) errs.push('unknown market "'+v+'"');
     }
     perRow.push({ ok: errs.length===0, errors: errs });
     if (errs.length===0) valid++; else invalid++;
