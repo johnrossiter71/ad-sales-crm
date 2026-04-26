@@ -404,6 +404,8 @@ tbody tr:hover{background:#f5f8fc;}
 
   <!-- DASHBOARD -->
   <div id="dashboard" class="view active">
+    <div id="dash-deadline-banner"></div>
+    <div id="dash-pending-approvals"></div>
     <div class="kpi-row" id="dash-kpis"></div>
     <div class="chart-grid">
       <div class="chart-card"><h3>Pipeline by Stage</h3><div id="dash-stage-chart"></div></div>
@@ -1399,6 +1401,37 @@ function showToast(msg, type='success') {
 // DASHBOARD
 // ===================================================================
 function renderDashboard() {
+  // Pending approvals (Yield/Admin only)
+  const pendingEl = document.getElementById('dash-pending-approvals');
+  if (pendingEl) {
+    if (canApprove()) {
+      const pending = DEALS.filter(d => d.approval_status === 'pending');
+      if (pending.length > 0) {
+        pendingEl.innerHTML = `<div style="background:#FFF8E1;border-left:4px solid #FF9800;border-radius:8px;padding:12px 16px;margin-bottom:16px;">
+          <div style="font-weight:700;color:#E65100;font-size:13px;margin-bottom:6px;">&#9202; ${pending.length} deal${pending.length===1?'':'s'} pending approval</div>
+          <table style="width:100%;font-size:12px;"><thead><tr><th style="background:transparent;color:#E65100;text-align:left;padding:4px 8px;">Deal</th><th style="background:transparent;color:#E65100;text-align:left;padding:4px 8px;">Rep</th><th style="background:transparent;color:#E65100;text-align:right;padding:4px 8px;">Amount</th><th style="background:transparent;color:#E65100;text-align:right;padding:4px 8px;">Days waiting</th></tr></thead><tbody>${pending.map(d=>{
+            const dwait = d.updated_at ? daysBetween(d.updated_at, today) : 0;
+            return `<tr style="cursor:pointer;" onclick="showDetail('${d.id}')"><td style="padding:4px 8px;">${d.opportunity_name}</td><td style="padding:4px 8px;">${d.sales_rep||''}</td><td style="padding:4px 8px;text-align:right;">${fmt(d.amount)}</td><td style="padding:4px 8px;text-align:right;">${dwait}d</td></tr>`;
+          }).join('')}</tbody></table>
+        </div>`;
+      } else {
+        pendingEl.innerHTML = '';
+      }
+    } else {
+      pendingEl.innerHTML = '';
+    }
+  }
+  // Deadline banner
+  const banner = document.getElementById('dash-deadline-banner');
+  if (banner) {
+    const t = new Date();
+    const day = t.getDate();
+    const messages = [];
+    if (day >= 20) messages.push({c:'#FFF3E0', txt:'&#9888; Actuals due by the 25th'});
+    if (day <= 5) messages.push({c:'#FFFDE7', txt:'&#128197; Forecast close due by the 5th'});
+    banner.innerHTML = messages.length === 0 ? '' : messages.map(m=>`<div style="background:${m.c};border-radius:8px;padding:10px 14px;margin-bottom:8px;font-size:13px;color:#5D4037;font-weight:600;">${m.txt}</div>`).join('');
+  }
+
   const active = DEALS.filter(d=>d.stage!=='Closed Won'&&d.stage!=='Closed Lost');
   const won = DEALS.filter(d=>d.stage==='Closed Won');
   const lost = DEALS.filter(d=>d.stage==='Closed Lost');
@@ -1730,6 +1763,9 @@ async function handleDrop(event, newStage) {
   if (!deal || deal.stage === newStage) return;
   if (deal.stage === 'Closed Lost') { showToast('Cannot revert Closed Lost deals','error'); return; }
   if (newStage === 'Closed Lost' && !confirm('Move deal to Closed Lost? This cannot be undone.')) return;
+  if (deal.stage === 'Negotiation' && newStage === 'Close to Close' && deal.approval_status === 'pending') {
+    showToast('Cannot advance — yield approval is still pending','error'); return;
+  }
 
   const { error } = await sb.from('opportunities').update({ stage: newStage }).eq('id', dealId);
   if (error) { showToast('Error: '+error.message,'error'); return; }
@@ -2213,6 +2249,7 @@ function showDetail(id) {
         <div class="detail-row"><span class="dl">Business Type</span><span class="dv">${d.business_type||''}</span></div>
         <div class="detail-row"><span class="dl">Opportunity Age</span><span class="dv">${d.opp_age} days</span></div>
         <div class="detail-row"><span class="dl">Days at Stage</span><span class="dv ${d.is_stalled?'overdue':''}">${d.days_in_stage}d${d.max_days_stall?' / '+d.max_days_stall+'d max':''}</span></div></div>
+      ${renderApprovalSection(d)}
       ${(d.secondary_owner||d.planner||d.yield_contact||d.bpi_contact)?`<div class="detail-section"><h3>Deal Team</h3>
         ${d.sales_rep?`<div class="detail-row"><span class="dl">Primary Owner (AE)</span><span class="dv">${d.sales_rep}</span></div>`:''}
         ${d.secondary_owner?`<div class="detail-row"><span class="dl">Secondary Owner</span><span class="dv">${d.secondary_owner}</span></div>`:''}
@@ -2259,6 +2296,10 @@ function closeDetail() { document.getElementById('detail-overlay').classList.rem
 
 async function changeStage(dealId, newStage) {
   if (newStage === 'Closed Lost' && !confirm('Move deal to Closed Lost? This cannot be undone.')) return;
+  const cur = DEALS.find(x => x.id === dealId);
+  if (cur && cur.stage === 'Negotiation' && newStage === 'Close to Close' && cur.approval_status === 'pending') {
+    showToast('Cannot advance — yield approval is still pending','error'); return;
+  }
   if (!confirm(`Change stage to "${newStage}"?`)) return;
   const { error } = await sb.from('opportunities').update({ stage: newStage }).eq('id', dealId);
   if (error) { showToast('Error: '+error.message,'error'); return; }
@@ -2607,6 +2648,66 @@ async function saveAdvertiser() {
   document.getElementById('advertiser-modal').classList.remove('open');
   showToast('Advertiser added');
   await loadAllData(); renderClients();
+}
+
+// ===================================================================
+// APPROVAL WORKFLOW
+// ===================================================================
+function canApprove() { return currentRole === 'admin' || currentRole === 'sales_lead'; }
+
+function renderApprovalSection(d) {
+  // Show only for deals at Negotiation or higher (and not Closed Lost)
+  const stageIdx = STAGE_ORDER.indexOf(d.stage);
+  const negIdx = STAGE_ORDER.indexOf('Negotiation');
+  if (stageIdx < negIdx || d.stage === 'Closed Lost') return '';
+  const status = d.approval_status || 'not_required';
+  const colors = { not_required:'#888', pending:'#FF9800', approved:'#4CAF50', rejected:'#F44336' };
+  const labels = { not_required:'Not Required', pending:'Pending', approved:'Approved', rejected:'Rejected' };
+  return `<div class="detail-section"><h3>Approval</h3>
+    <div class="detail-row"><span class="dl">Status</span><span class="dv"><span class="stage-badge" style="background:${colors[status]}33;color:${colors[status]};">${labels[status]}</span></span></div>
+    ${d.approved_by?`<div class="detail-row"><span class="dl">${status==='rejected'?'Rejected':'Approved'} By</span><span class="dv">${d.approved_by}</span></div>`:''}
+    ${d.approved_at?`<div class="detail-row"><span class="dl">${status==='rejected'?'Rejected':'Approved'} On</span><span class="dv">${dateStr(d.approved_at)}</span></div>`:''}
+    ${d.approval_notes?`<div class="detail-notes" style="margin-top:6px;">${d.approval_notes}</div>`:''}
+    <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+      ${status==='not_required'?`<button class="btn-secondary" style="font-size:11px;padding:6px 12px;" onclick="requestApproval('${d.id}')">Request Approval</button>`:''}
+      ${canApprove() && (status==='pending'||status==='not_required')?`<button class="btn-primary" style="font-size:11px;padding:6px 12px;background:#2E7D32;" onclick="approveDeal('${d.id}')">Approve</button>`:''}
+      ${canApprove() && (status==='pending')?`<button class="btn-danger" style="font-size:11px;padding:6px 12px;" onclick="rejectDeal('${d.id}')">Reject</button>`:''}
+    </div>
+  </div>`;
+}
+
+async function requestApproval(id) {
+  const { error } = await sb.from('opportunities').update({ approval_status: 'pending' }).eq('id', id);
+  if (error) { showToast('Error: '+error.message,'error'); return; }
+  showToast('Approval requested');
+  await loadAllData(); showDetail(id);
+}
+
+async function approveDeal(id) {
+  const notes = prompt('Optional approval notes:') || null;
+  const { error } = await sb.from('opportunities').update({
+    approval_status: 'approved',
+    approved_by: currentUser ? currentUser.email : null,
+    approved_at: new Date().toISOString(),
+    approval_notes: notes
+  }).eq('id', id);
+  if (error) { showToast('Error: '+error.message,'error'); return; }
+  showToast('Approved');
+  await loadAllData(); showDetail(id);
+}
+
+async function rejectDeal(id) {
+  const notes = prompt('Reason for rejection:') || null;
+  if (!notes) return;
+  const { error } = await sb.from('opportunities').update({
+    approval_status: 'rejected',
+    approved_by: currentUser ? currentUser.email : null,
+    approved_at: new Date().toISOString(),
+    approval_notes: notes
+  }).eq('id', id);
+  if (error) { showToast('Error: '+error.message,'error'); return; }
+  showToast('Rejected');
+  await loadAllData(); showDetail(id);
 }
 
 // ===================================================================
