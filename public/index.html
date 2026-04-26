@@ -486,6 +486,7 @@ tbody tr:hover{background:#f5f8fc;}
   <!-- FORECAST -->
   <div id="forecast" class="view">
     <div class="section-header"><h2>Revenue Forecast</h2></div>
+    <div id="forecast-status-bar"></div>
     <div class="filters">
       <div class="filter-group"><label>Platform</label><select id="f-fc-platform"><option value="">All Platforms</option><option value="Linear">Linear</option><option value="Digital">Digital</option></select></div>
     </div>
@@ -1421,7 +1422,7 @@ function renderDashboard() {
       pendingEl.innerHTML = '';
     }
   }
-  // Deadline banner
+  // Deadline banner + forecast status widget
   const banner = document.getElementById('dash-deadline-banner');
   if (banner) {
     const t = new Date();
@@ -1429,6 +1430,24 @@ function renderDashboard() {
     const messages = [];
     if (day >= 20) messages.push({c:'#FFF3E0', txt:'&#9888; Actuals due by the 25th'});
     if (day <= 5) messages.push({c:'#FFFDE7', txt:'&#128197; Forecast close due by the 5th'});
+    // Add current period status
+    const curMonth = today.slice(0,7);
+    const curPeriod = FORECAST_PERIODS.find(p => p.month === curMonth);
+    if (curPeriod) {
+      const nextDeadline = curPeriod.actuals_deadline && curPeriod.actuals_deadline >= today
+        ? { name:'Actuals deadline', date: curPeriod.actuals_deadline }
+        : (curPeriod.forecast_deadline && curPeriod.forecast_deadline >= today
+            ? { name:'Forecast deadline', date: curPeriod.forecast_deadline } : null);
+      const daysUntil = nextDeadline ? daysBetween(today, nextDeadline.date) : null;
+      const statusText = `Period ${curMonth} status: <strong>${curPeriod.status}</strong>${nextDeadline ? ` · ${nextDeadline.name} ${nextDeadline.date} (in ${daysUntil}d)` : ''}`;
+      const bg = curPeriod.status==='closed'?'#ECEFF1':curPeriod.status==='forecast_due'?'#FFE0B2':curPeriod.status==='actuals_due'?'#FFF3E0':'#E8F5E9';
+      messages.unshift({c: bg, txt: '&#128202; ' + statusText});
+    }
+    // Variance count: forecasts with >10% variance
+    const variances = FORECASTS.filter(f => f.actual_amount != null && f.forecast_amount > 0).filter(f => Math.abs(f.actual_amount - f.forecast_amount) / f.forecast_amount > 0.1);
+    if (variances.length > 0) {
+      messages.push({c:'#FFEBEE', txt:`&#9888; ${variances.length} forecast${variances.length===1?'':'s'} with >10% variance`});
+    }
     banner.innerHTML = messages.length === 0 ? '' : messages.map(m=>`<div style="background:${m.c};border-radius:8px;padding:10px 14px;margin-bottom:8px;font-size:13px;color:#5D4037;font-weight:600;">${m.txt}</div>`).join('');
   }
 
@@ -1801,6 +1820,20 @@ function renderPipelineTable(deals) {
 // FORECAST
 // ===================================================================
 function renderForecast() {
+  // Status bar
+  const bar = document.getElementById('forecast-status-bar');
+  if (bar) {
+    if (FORECAST_PERIODS.length === 0) {
+      bar.innerHTML = '';
+    } else {
+      const pillColors = { open:'#fff', actuals_due:'#FFFDE7', forecast_due:'#FFF3E0', pending_approval:'#E8EAF6', closed:'#ECEFF1' };
+      const pillBorders = { open:'#bbb', actuals_due:'#FFC107', forecast_due:'#FF9800', pending_approval:'#5C6BC0', closed:'#37474F' };
+      bar.innerHTML = `<div style="background:#fff;border-radius:10px;padding:12px 16px;box-shadow:0 1px 4px rgba(0,0,0,0.06);margin-bottom:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <span style="font-size:12px;font-weight:700;color:#666;text-transform:uppercase;">Period Status:</span>
+        ${FORECAST_PERIODS.slice(0,12).map(p => `<span style="background:${pillColors[p.status]||'#fff'};border:1px solid ${pillBorders[p.status]||'#bbb'};padding:3px 10px;border-radius:12px;font-size:11px;font-weight:700;color:#444;">${p.month} · ${p.status}</span>`).join('')}
+      </div>`;
+    }
+  }
   // Forecast entries are filtered by linked deal's platform_mix when a platform
   // filter is active; revenue actuals are filtered directly by the platform field.
   const platform = forecastPlatformFilter;
@@ -1872,11 +1905,19 @@ function renderForecast() {
 
   // Detail table — only rows that have forecast data (skip months that exist
   // only as actuals, since they have no Forecast/Variance to show)
+  const periodByMonth = {};
+  FORECAST_PERIODS.forEach(p => periodByMonth[p.month] = p);
+  const periodColor = { open:'#fff', actuals_due:'#FFFDE7', forecast_due:'#FFF3E0', pending_approval:'#E8EAF6', closed:'#ECEFF1' };
   document.getElementById('fc-detail-body').innerHTML = months.filter(m=>monthAgg[m]).map(m=>{
     const d=monthAgg[m]; const v=d.hasAct?d.act-d.fc:null;
-    return `<tr><td style="font-weight:700;color:#1B3A5C;">${m}</td><td class="amount">${fmt(d.fc)}</td>
+    const period = periodByMonth[m];
+    const variancePct = (d.hasAct && d.fc>0) ? Math.abs(v)/d.fc : 0;
+    const highVar = variancePct > 0.1;
+    const periodLabel = period ? `<span style="background:${periodColor[period.status]||'#fff'};border:1px solid #ddd;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:700;color:#666;margin-left:6px;">${period.status}</span>` : '';
+    const rowBg = period ? periodColor[period.status] : '#fff';
+    return `<tr style="background:${rowBg};"><td style="font-weight:700;color:#1B3A5C;">${m}${periodLabel}</td><td class="amount">${fmt(d.fc)}</td>
       <td class="amount">${d.hasAct?fmt(d.act):'<span style="color:#bbb">-</span>'}</td>
-      <td class="amount" style="color:${v!==null?(v>=0?'#4CAF50':'#F44336'):'#bbb'};font-weight:700;">${v!==null?(v>=0?'+':'')+fmt(v):'-'}</td>
+      <td class="amount" style="color:${v!==null?(v>=0?'#4CAF50':'#F44336'):'#bbb'};font-weight:700;">${v!==null?(v>=0?'+':'')+fmt(v):'-'}${highVar?' <span title="&gt;10% variance" style="color:#F44336;">&#9888;</span>':''}</td>
       <td>${d.deals.size} deal${d.deals.size!==1?'s':''}</td></tr>`;
   }).join('');
 
