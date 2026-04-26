@@ -2350,7 +2350,7 @@ function renderDealForm(deal) {
         <div class="form-group"><label>Business Type</label><select id="df-biz"><option value="">Select...</option><option value="New" ${isEdit&&deal.business_type==='New'?'selected':''}>New</option><option value="Existing" ${isEdit&&deal.business_type==='Existing'?'selected':''}>Existing</option></select></div>
       </div>
       <div class="form-row">
-        <div class="form-group"><label>Amount (USD) <span class="req">*</span></label><input type="number" id="df-amount" value="${isEdit?deal.amount:''}" min="0" step="1000" onchange="autoTier()"></div>
+        <div class="form-group"><label>Amount (USD) <span class="req">*</span></label><input type="number" id="df-amount" value="${isEdit?deal.amount:''}" min="0" step="1000" onchange="autoTier()" oninput="this.dataset.userEdited='1'"></div>
         <div class="form-group"><label>Tier (auto-calculated)</label><select id="df-tier"><option value="1" ${isEdit&&deal.tier===1?'selected':''}>Tier 1 — Anchor ($500K+)</option><option value="2" ${isEdit&&deal.tier===2?'selected':''}>Tier 2 — Featured ($50K-$500K)</option><option value="3" ${isEdit&&deal.tier===3?'selected':''}>Tier 3 — Programmatic (&lt;$50K)</option></select></div>
       </div>
       <div class="form-row">
