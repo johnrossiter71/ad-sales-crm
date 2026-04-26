@@ -584,6 +584,26 @@ tbody tr:hover{background:#f5f8fc;}
         <button class="btn-primary" onclick="saveUserRole()">Save Role</button>
       </div>
     </div>
+
+    <div class="section-header" style="margin-top:32px;"><h2>Budget Management</h2>
+      <div style="display:flex;gap:8px;">
+        <select id="budget-fy-select" onchange="renderBudgetSection()" style="padding:7px 12px;border:1px solid #ddd;border-radius:8px;"></select>
+        <button class="btn-primary" onclick="openBudgetForm(null)">+ Add Budget</button>
+      </div>
+    </div>
+    <div id="budget-section"></div>
+
+    <div class="section-header" style="margin-top:32px;"><h2>Markets</h2>
+      <button class="btn-primary" onclick="openMarketForm(null)">+ Add Market</button>
+    </div>
+    <div id="markets-section"></div>
+
+    <div class="section-header" style="margin-top:32px;"><h2>Forecast Periods</h2>
+      <div style="display:flex;gap:8px;">
+        <button class="btn-secondary" onclick="autoGenerateForecastPeriods()">Auto-generate FY</button>
+      </div>
+    </div>
+    <div id="forecast-periods-section"></div>
   </div>
 
   <!-- CLIENTS -->
@@ -1014,6 +1034,299 @@ function renderSettings() {
       <td><span class="stage-badge" style="background:#E3F2FD;color:#1565C0;">${r.role}</span></td>
       <td>${r.sales_rep_name||''}</td>
       <td><button class="btn-danger" onclick="deleteUserRole('${r.user_id}')">Remove</button></td></tr>`).join('');
+  // Populate FY select
+  const fySel = document.getElementById('budget-fy-select');
+  if (fySel) {
+    const years = [...new Set([String(new Date().getFullYear()), ...REP_BUDGETS.map(b => b.fiscal_year)])].sort();
+    const current = fySel.value || String(new Date().getFullYear());
+    fySel.innerHTML = years.map(y => `<option value="${y}" ${y===current?'selected':''}>${y}</option>`).join('');
+  }
+  renderBudgetSection();
+  renderMarketsSection();
+  renderForecastPeriodsSection();
+}
+
+const MONTH_KEYS = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+
+function renderBudgetSection() {
+  const el = document.getElementById('budget-section');
+  if (!el) return;
+  const fy = (document.getElementById('budget-fy-select')||{}).value || String(new Date().getFullYear());
+  const fyBudgets = REP_BUDGETS.filter(b => b.fiscal_year === fy);
+  if (fyBudgets.length === 0) {
+    el.innerHTML = '<div style="background:#fff;border-radius:10px;padding:24px;text-align:center;color:#888;font-size:13px;">No budgets for ' + fy + ' yet. Click "Add Budget" to create one.</div>';
+    return;
+  }
+  const headerCols = MONTH_KEYS.map(m => `<th style="text-align:right;text-transform:uppercase;font-size:10px;">${m}</th>`).join('');
+  const rows = fyBudgets.map(b => {
+    const cells = MONTH_KEYS.map(m => `<td class="amount" style="font-size:11px;">${fmtK(Number(b[m])||0)}</td>`).join('');
+    const sumMonths = MONTH_KEYS.reduce((s,m)=>s+(Number(b[m])||0), 0);
+    const variance = Number(b.annual_target)||0 - sumMonths;
+    return `<tr>
+      <td><strong>${b.sales_rep}</strong></td>
+      <td class="amount" style="font-weight:700;">${fmt(b.annual_target)}</td>
+      ${cells}
+      <td class="amount" style="${Math.abs(variance)>10?'color:#F44336':''}">${fmt(sumMonths)}</td>
+      <td>
+        <button class="btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="openBudgetForm('${b.id}')">Edit</button>
+        <button class="btn-danger" style="font-size:11px;padding:4px 8px;" onclick="deleteBudget('${b.id}')">×</button>
+      </td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `<div class="table-wrap"><table>
+    <thead><tr><th>Rep</th><th style="text-align:right">Annual Target</th>${headerCols}<th style="text-align:right">Monthly Sum</th><th></th></tr></thead>
+    <tbody>${rows}</tbody></table></div>
+    <div style="display:flex;gap:8px;margin-top:10px;">
+      <button class="btn-secondary" onclick="openTransferBudget()">Transfer Budget</button>
+    </div>`;
+}
+
+function openBudgetForm(id) {
+  const existing = id ? REP_BUDGETS.find(b => b.id === id) : null;
+  const reps = [...new Set(DEALS.map(d=>d.sales_rep).filter(Boolean))].sort();
+  const fy = (document.getElementById('budget-fy-select')||{}).value || String(new Date().getFullYear());
+  const html = `
+    <div class="modal-header"><h2>${id?'Edit':'New'} Budget</h2><button class="modal-close" onclick="document.getElementById('activity-modal').classList.remove('open')">&times;</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label>Sales Rep</label>${id?`<input type="text" id="bf-rep" value="${existing.sales_rep}" readonly style="background:#f8f9fa;">`:`<input type="text" id="bf-rep" list="bf-reps-dl" placeholder="Rep name"><datalist id="bf-reps-dl">${reps.map(r=>'<option value="'+r+'">').join('')}</datalist>`}</div>
+        <div class="form-group"><label>Fiscal Year</label><input type="text" id="bf-year" value="${id?existing.fiscal_year:fy}"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Annual Target (USD)</label><input type="number" id="bf-target" value="${id?existing.annual_target:''}" step="1000" min="0"></div>
+        <div class="form-group" style="justify-content:flex-end;align-items:flex-end;flex-direction:row;gap:6px;"><button class="btn-secondary" onclick="autoDistributeBudget()">Auto-distribute (even)</button></div>
+      </div>
+      <div style="font-weight:700;color:#1B3A5C;font-size:12px;margin:8px 0;">Monthly Breakdown</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">
+        ${MONTH_KEYS.map(m=>`<div class="form-group"><label style="text-transform:uppercase;font-size:10px;">${m}</label><input type="number" id="bf-${m}" value="${id?(existing[m]||0):0}" step="100"></div>`).join('')}
+      </div>
+      <div class="form-row full" style="margin-top:10px;"><div class="form-group"><label>Notes</label><textarea id="bf-notes">${id?existing.notes||'':''}</textarea></div></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="document.getElementById('activity-modal').classList.remove('open')">Cancel</button>
+      <button class="btn-primary" onclick="saveBudget('${id||''}')">${id?'Save':'Create'}</button>
+    </div>`;
+  document.getElementById('activity-modal-content').innerHTML = html;
+  document.getElementById('activity-modal').classList.add('open');
+}
+
+function autoDistributeBudget() {
+  const target = parseFloat(document.getElementById('bf-target').value)||0;
+  const each = Math.round(target/12);
+  MONTH_KEYS.forEach((m,i) => {
+    const v = i === 11 ? target - each*11 : each; // last month absorbs rounding
+    document.getElementById('bf-'+m).value = v;
+  });
+}
+
+async function saveBudget(id) {
+  const data = {
+    sales_rep: document.getElementById('bf-rep').value.trim(),
+    fiscal_year: document.getElementById('bf-year').value.trim(),
+    annual_target: parseFloat(document.getElementById('bf-target').value)||0,
+    notes: document.getElementById('bf-notes').value || null,
+    updated_at: new Date().toISOString()
+  };
+  MONTH_KEYS.forEach(m => data[m] = parseFloat(document.getElementById('bf-'+m).value)||0);
+  if (!data.sales_rep || !data.fiscal_year) { showToast('Rep and fiscal year required','error'); return; }
+  let result;
+  if (id) {
+    result = await sb.from('rep_budgets').update(data).eq('id', id);
+  } else {
+    if (currentUser) data.created_by = currentUser.id;
+    result = await sb.from('rep_budgets').insert(data);
+  }
+  if (result.error) { showToast('Error: '+result.error.message,'error'); return; }
+  document.getElementById('activity-modal').classList.remove('open');
+  showToast('Budget saved');
+  await loadAllData(); renderSettings(); renderTeam(); renderDashboard();
+}
+
+async function deleteBudget(id) {
+  if (!confirm('Remove this budget?')) return;
+  const { error } = await sb.from('rep_budgets').delete().eq('id', id);
+  if (error) { showToast('Error: '+error.message,'error'); return; }
+  showToast('Budget removed');
+  await loadAllData(); renderSettings(); renderTeam(); renderDashboard();
+}
+
+function openTransferBudget() {
+  const fy = (document.getElementById('budget-fy-select')||{}).value || String(new Date().getFullYear());
+  const fyBudgets = REP_BUDGETS.filter(b => b.fiscal_year === fy);
+  if (fyBudgets.length < 2) { showToast('Need at least two budgets to transfer','error'); return; }
+  const html = `
+    <div class="modal-header"><h2>Transfer Budget</h2><button class="modal-close" onclick="document.getElementById('activity-modal').classList.remove('open')">&times;</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label>From Rep</label><select id="tb-from">${fyBudgets.map(b=>'<option value="'+b.id+'">'+b.sales_rep+'</option>').join('')}</select></div>
+        <div class="form-group"><label>To Rep</label><select id="tb-to">${fyBudgets.map(b=>'<option value="'+b.id+'">'+b.sales_rep+'</option>').join('')}</select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Effective From Month</label><select id="tb-from-month">${MONTH_KEYS.map((m,i)=>'<option value="'+m+'">'+m.toUpperCase()+'</option>').join('')}</select></div>
+      </div>
+      <div style="font-size:12px;color:#888;">All amounts from the chosen month onward in the source rep will be moved to the destination rep, then zeroed out on the source.</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="document.getElementById('activity-modal').classList.remove('open')">Cancel</button>
+      <button class="btn-primary" onclick="executeTransfer()">Transfer</button>
+    </div>`;
+  document.getElementById('activity-modal-content').innerHTML = html;
+  document.getElementById('activity-modal').classList.add('open');
+}
+
+function renderMarketsSection() {
+  const el = document.getElementById('markets-section');
+  if (!el) return;
+  if (MARKETS.length === 0) {
+    el.innerHTML = '<div style="background:#fff;border-radius:10px;padding:24px;text-align:center;color:#888;font-size:13px;">No markets defined yet. Run migration 011_markets.sql then click "Add Market".</div>';
+    return;
+  }
+  el.innerHTML = `<div class="table-wrap"><table>
+    <thead><tr><th>Market</th><th>Region</th><th>Currency</th><th>Active</th><th>Order</th><th></th></tr></thead>
+    <tbody>${MARKETS.map(m=>`<tr>
+      <td><strong>${m.market_name}</strong></td>
+      <td>${m.region||''}</td>
+      <td>${m.currency||''}</td>
+      <td>${m.is_active?'<span style="color:#4CAF50;">●</span> Active':'<span style="color:#888;">○</span> Inactive'}</td>
+      <td>${m.sort_order||0}</td>
+      <td>
+        <button class="btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="openMarketForm('${m.id}')">Edit</button>
+        <button class="btn-danger" style="font-size:11px;padding:4px 8px;" onclick="deleteMarket('${m.id}')">×</button>
+      </td>
+    </tr>`).join('')}</tbody></table></div>`;
+}
+
+function openMarketForm(id) {
+  const existing = id ? MARKETS.find(m => m.id === id) : null;
+  const html = `
+    <div class="modal-header"><h2>${id?'Edit':'New'} Market</h2><button class="modal-close" onclick="document.getElementById('activity-modal').classList.remove('open')">&times;</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label>Market Name <span class="req">*</span></label><input type="text" id="mf-name" value="${existing?existing.market_name:''}"></div>
+        <div class="form-group"><label>Region</label><select id="mf-region"><option value="">—</option><option ${existing&&existing.region==='South America'?'selected':''}>South America</option><option ${existing&&existing.region==='Central America'?'selected':''}>Central America</option><option ${existing&&existing.region==='Caribbean'?'selected':''}>Caribbean</option><option ${existing&&existing.region==='North America'?'selected':''}>North America</option></select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Currency</label><input type="text" id="mf-currency" value="${existing?existing.currency||'':''}" placeholder="USD, BRL, MXN..."></div>
+        <div class="form-group"><label>Sort Order</label><input type="number" id="mf-sort" value="${existing?existing.sort_order||0:0}"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Active?</label><select id="mf-active"><option value="true" ${!existing||existing.is_active?'selected':''}>Active</option><option value="false" ${existing&&!existing.is_active?'selected':''}>Inactive</option></select></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="document.getElementById('activity-modal').classList.remove('open')">Cancel</button>
+      <button class="btn-primary" onclick="saveMarket('${id||''}')">${id?'Save':'Create'}</button>
+    </div>`;
+  document.getElementById('activity-modal-content').innerHTML = html;
+  document.getElementById('activity-modal').classList.add('open');
+}
+
+async function saveMarket(id) {
+  const data = {
+    market_name: document.getElementById('mf-name').value.trim(),
+    region: document.getElementById('mf-region').value || null,
+    currency: document.getElementById('mf-currency').value || null,
+    sort_order: parseInt(document.getElementById('mf-sort').value)||0,
+    is_active: document.getElementById('mf-active').value === 'true'
+  };
+  if (!data.market_name) { showToast('Market name required','error'); return; }
+  const result = id
+    ? await sb.from('markets').update(data).eq('id', id)
+    : await sb.from('markets').insert(data);
+  if (result.error) { showToast('Error: '+result.error.message,'error'); return; }
+  document.getElementById('activity-modal').classList.remove('open');
+  showToast('Market saved');
+  await loadAllData(); initUI();
+}
+
+async function deleteMarket(id) {
+  if (!confirm('Remove this market?')) return;
+  const { error } = await sb.from('markets').delete().eq('id', id);
+  if (error) { showToast('Error: '+error.message,'error'); return; }
+  showToast('Market removed');
+  await loadAllData(); initUI();
+}
+
+function renderForecastPeriodsSection() {
+  const el = document.getElementById('forecast-periods-section');
+  if (!el) return;
+  if (FORECAST_PERIODS.length === 0) {
+    el.innerHTML = '<div style="background:#fff;border-radius:10px;padding:24px;text-align:center;color:#888;font-size:13px;">No forecast periods yet. Run migration 017_forecast_periods.sql, then click "Auto-generate FY".</div>';
+    return;
+  }
+  const statusColors = { open:'#888', actuals_due:'#FF9800', forecast_due:'#FB8C00', pending_approval:'#5C6BC0', closed:'#37474F' };
+  el.innerHTML = `<div class="table-wrap"><table>
+    <thead><tr><th>Month</th><th>Status</th><th>Actuals Deadline</th><th>Forecast Deadline</th><th>Closed</th><th></th></tr></thead>
+    <tbody>${FORECAST_PERIODS.map(p=>`<tr>
+      <td><strong>${p.month}</strong></td>
+      <td><span class="stage-badge" style="background:${statusColors[p.status]||'#888'}33;color:${statusColors[p.status]||'#888'};">${p.status}</span></td>
+      <td>${p.actuals_deadline||''}</td>
+      <td>${p.forecast_deadline||''}</td>
+      <td>${p.closed_at?dateStr(p.closed_at):''}</td>
+      <td>
+        ${p.status!=='closed'?`<button class="btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="closeForecastPeriod('${p.id}')">Close</button>`:`<button class="btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="reopenForecastPeriod('${p.id}')">Reopen</button>`}
+      </td>
+    </tr>`).join('')}</tbody></table></div>`;
+}
+
+async function autoGenerateForecastPeriods() {
+  const yr = new Date().getFullYear();
+  const existing = new Set(FORECAST_PERIODS.map(p => p.month));
+  const toInsert = [];
+  for (let m = 1; m <= 12; m++) {
+    const mm = String(m).padStart(2,'0');
+    const month = `${yr}-${mm}`;
+    if (existing.has(month)) continue;
+    const lastDay = new Date(yr, m, 0).getDate();
+    const actualsDeadline = `${yr}-${mm}-${Math.min(25, lastDay)}`;
+    const nextMonthDate = new Date(yr, m, 5);
+    const forecastDeadline = nextMonthDate.toISOString().slice(0,10);
+    toInsert.push({ month, status: 'open', actuals_deadline: actualsDeadline, forecast_deadline: forecastDeadline });
+  }
+  if (toInsert.length === 0) { showToast('All months already exist'); return; }
+  const { error } = await sb.from('forecast_periods').insert(toInsert);
+  if (error) { showToast('Error: '+error.message,'error'); return; }
+  showToast(`Created ${toInsert.length} periods`);
+  await loadAllData(); renderSettings(); renderForecast();
+}
+
+async function closeForecastPeriod(id) {
+  if (!confirm('Close this period? Forecast amounts will become read-only.')) return;
+  const { error } = await sb.from('forecast_periods').update({ status:'closed', closed_at: new Date().toISOString() }).eq('id', id);
+  if (error) { showToast('Error: '+error.message,'error'); return; }
+  showToast('Period closed');
+  await loadAllData(); renderSettings(); renderForecast();
+}
+
+async function reopenForecastPeriod(id) {
+  if (!confirm('Reopen this period?')) return;
+  const { error } = await sb.from('forecast_periods').update({ status:'open', closed_at: null }).eq('id', id);
+  if (error) { showToast('Error: '+error.message,'error'); return; }
+  showToast('Period reopened');
+  await loadAllData(); renderSettings(); renderForecast();
+}
+
+async function executeTransfer() {
+  const fromId = document.getElementById('tb-from').value;
+  const toId = document.getElementById('tb-to').value;
+  if (fromId === toId) { showToast('Source and target must differ','error'); return; }
+  const fromMonth = document.getElementById('tb-from-month').value;
+  const fromIdx = MONTH_KEYS.indexOf(fromMonth);
+  const src = REP_BUDGETS.find(b => b.id === fromId);
+  const dst = REP_BUDGETS.find(b => b.id === toId);
+  if (!src || !dst) return;
+  const updSrc = { updated_at: new Date().toISOString() };
+  const updDst = { updated_at: new Date().toISOString() };
+  for (let i = fromIdx; i < MONTH_KEYS.length; i++) {
+    const k = MONTH_KEYS[i];
+    updDst[k] = (Number(dst[k])||0) + (Number(src[k])||0);
+    updSrc[k] = 0;
+  }
+  await sb.from('rep_budgets').update(updSrc).eq('id', fromId);
+  await sb.from('rep_budgets').update(updDst).eq('id', toId);
+  document.getElementById('activity-modal').classList.remove('open');
+  showToast('Budget transferred');
+  await loadAllData(); renderSettings(); renderTeam(); renderDashboard();
 }
 
 async function saveUserRole() {
@@ -1087,7 +1400,16 @@ function renderDashboard() {
     ? `${linearPct}% / ${digitalPct}%`
     : '— / —';
 
+  // Team attainment from rep_budgets (current fiscal year)
+  const fy = String(new Date().getFullYear());
+  const fyBudgets = REP_BUDGETS.filter(b => b.fiscal_year === fy);
+  const fyTarget = fyBudgets.reduce((s,b)=>s+(Number(b.annual_target)||0),0);
+  const fyWon = won.reduce((s,d)=>s+(Number(d.amount)||0),0);
+  const teamAttainmentPct = fyTarget>0 ? Math.round(fyWon/fyTarget*100) : null;
+  const taColor = teamAttainmentPct===null?'blue':teamAttainmentPct>=100?'green':teamAttainmentPct>=80?'orange':'red';
+
   document.getElementById('dash-kpis').innerHTML = `
+    <div class="kpi ${taColor}"><div class="kpi-label">Team Attainment (${fy})</div><div class="kpi-value">${teamAttainmentPct===null?'—':teamAttainmentPct+'%'}</div><div class="kpi-sub">${fmtK(fyWon)} / ${fmtK(fyTarget)}</div></div>
     <div class="kpi blue"><div class="kpi-label">Total Pipeline</div><div class="kpi-value">${fmtK(totalPipeline)}</div><div class="kpi-sub">${active.length} active deals</div></div>
     <div class="kpi green"><div class="kpi-label">Weighted Pipeline</div><div class="kpi-value">${fmtK(weightedPipeline)}</div><div class="kpi-sub">Confidence-adjusted</div></div>
     <div class="kpi blue"><div class="kpi-label">Active Deals</div><div class="kpi-value">${active.length}</div><div class="kpi-sub">${DEALS.length} total</div></div>
@@ -1693,23 +2015,43 @@ function renderTeam() {
     if(d.stage==='Closed Lost')repAgg[d.sales_rep].lost++;
   });
 
-  // Targets from stage_settings don't have targets — use hardcoded for now based on seed data
-  const targets = {'Maria Santos':500000,'Carlos Mendez':600000,'Rafael Lima':300000,'Andrea Vargas':250000};
+  // Targets pulled from rep_budgets for the current fiscal year (fall back to legacy hardcoded values)
+  const fyKey = String(new Date().getFullYear());
+  const legacyTargets = {'Maria Santos':500000,'Carlos Mendez':600000,'Rafael Lima':300000,'Andrea Vargas':250000};
+  const monthKeys = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  const todayMonthIdx = new Date().getMonth();
 
   document.getElementById('rep-scorecards').innerHTML = Object.entries(repAgg).map(([name,r])=>{
-    const target = targets[name]||0;
+    const budget = REP_BUDGETS.find(b => b.sales_rep === name && b.fiscal_year === fyKey);
+    const target = budget ? Number(budget.annual_target)||0 : (legacyTargets[name]||0);
+    const ytdTarget = budget ? monthKeys.slice(0, todayMonthIdx+1).reduce((s,k)=>s+(Number(budget[k])||0), 0) : (target * (todayMonthIdx+1) / 12);
     const attainment = target>0 ? r.wonRev/target : 0;
     const attPct = Math.round(attainment*100);
+    const ytdAttPct = ytdTarget>0 ? Math.round(r.wonRev/ytdTarget*100) : 0;
     const total = r.won+r.lost;
     const winRate = total>0 ? Math.round(r.won/total*100) : 0;
-    const barColor = attPct>=100?'#4CAF50':attPct>=50?'#FF9800':'#F44336';
+    const barColor = attPct>=100?'#4CAF50':attPct>=80?'#FF9800':'#F44336';
+    // Mini sparkline of monthly targets
+    let spark = '';
+    if (budget) {
+      const max = Math.max(1, ...monthKeys.map(k=>Number(budget[k])||0));
+      spark = `<div style="display:flex;gap:2px;align-items:flex-end;height:24px;margin-top:6px;">${monthKeys.map((k,i)=>{
+        const v = Number(budget[k])||0;
+        const h = Math.max((v/max)*24, 2);
+        const past = i <= todayMonthIdx;
+        return `<div title="${k.toUpperCase()}: ${fmt(v)}" style="width:7px;height:${h}px;background:${past?'#1B3A5C':'#bbb'};border-radius:1px;"></div>`;
+      }).join('')}</div>`;
+    }
     return `<div class="rep-card"><div class="rep-name">${name}</div><div class="rep-role">${r.stalled>0?'<span style="color:#F44336;font-weight:700;">'+r.stalled+' stalled</span>':''}</div>
       <div class="rep-stats"><div class="rep-stat"><div class="stat-val">${r.active}</div><div class="stat-label">Active Deals</div></div>
         <div class="rep-stat"><div class="stat-val">${fmtK(r.pipeline)}</div><div class="stat-label">Pipeline</div></div>
         <div class="rep-stat"><div class="stat-val">${fmtK(r.weighted)}</div><div class="stat-label">Weighted</div></div>
         <div class="rep-stat"><div class="stat-val">${winRate}%</div><div class="stat-label">Win Rate</div></div></div>
-      <div style="font-size:12px;color:#888;">Target: ${fmt(target)} &middot; Won: ${fmt(r.wonRev)} &middot; Attainment: <strong style="color:${barColor}">${attPct}%</strong></div>
-      <div class="progress-bar"><div class="progress-fill" style="width:${Math.min(attPct,100)}%;background:${barColor};"></div></div></div>`;
+      <div style="font-size:12px;color:#888;">Annual Target: ${fmt(target)} &middot; Won: ${fmt(r.wonRev)}</div>
+      <div style="font-size:12px;color:#888;">YTD Target: ${fmt(ytdTarget)} &middot; YTD Attainment: <strong style="color:${ytdAttPct>=100?'#4CAF50':ytdAttPct>=80?'#FF9800':'#F44336'}">${ytdAttPct}%</strong></div>
+      <div style="font-size:12px;color:#888;">Annual Attainment: <strong style="color:${barColor}">${attPct}%</strong></div>
+      <div class="progress-bar"><div class="progress-fill" style="width:${Math.min(attPct,100)}%;background:${barColor};"></div></div>
+      ${spark}</div>`;
   }).join('');
 
   // Stalled deals
