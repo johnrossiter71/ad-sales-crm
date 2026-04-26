@@ -2798,12 +2798,134 @@ async function deleteAttachment(id, dealId) {
   showDetail(dealId);
 }
 
-// Schedule lines stub — implemented in Improvement 7
 function renderScheduleLinesSection(deal) {
   const lines = SCHEDULE_LINES.filter(l => l.opportunity_id === deal.id);
   const probPct = (deal.probability||0)*100;
   if (lines.length === 0 && probPct < 75) return '';
-  return typeof renderScheduleLinesUI === 'function' ? renderScheduleLinesUI(deal, lines) : '';
+  return renderScheduleLinesUI(deal, lines);
+}
+
+function buildMonthRange(start, end) {
+  if (!start || !end) return [];
+  const out = [];
+  const s = new Date(start), e = new Date(end);
+  let cur = new Date(s.getFullYear(), s.getMonth(), 1);
+  const last = new Date(e.getFullYear(), e.getMonth(), 1);
+  while (cur <= last) {
+    out.push(cur.getFullYear() + '-' + String(cur.getMonth()+1).padStart(2,'0'));
+    cur.setMonth(cur.getMonth()+1);
+  }
+  return out;
+}
+
+function renderScheduleLinesUI(deal, lines) {
+  const months = buildMonthRange(deal.fiscal_start, deal.fiscal_end);
+  if (months.length === 0 && lines.length === 0) {
+    return `<div class="detail-section"><h3>Revenue Schedule</h3>
+      <div style="text-align:center;padding:12px;color:#bbb;font-size:12px;">Set Flight Start and Flight End on the deal to enable schedule lines</div>
+      <button class="btn-secondary" style="font-size:11px;padding:6px 12px;" onclick="addScheduleLine('${deal.id}')">+ Add Schedule Line</button>
+    </div>`;
+  }
+  // Build map of forecast amounts by line+month
+  const fcMap = {};
+  FORECASTS.forEach(f => {
+    if (f.opportunity_id !== deal.id || !f.schedule_line_id) return;
+    fcMap[f.schedule_line_id+'|'+f.month] = f;
+  });
+  // Build the grid
+  const monthHead = months.map(m => `<th style="text-align:right;font-size:10px;padding:4px 6px;">${m.slice(2)}</th>`).join('');
+  const colTotals = months.map(_=>0);
+  const rows = lines.map(l => {
+    const cells = months.map((m,idx) => {
+      const f = fcMap[l.id+'|'+m] || {};
+      const val = Number(f.forecast_amount)||0;
+      colTotals[idx] += val;
+      const isPast = m < today.slice(0,7);
+      const hasActual = f.actual_amount != null;
+      const bg = hasActual ? '#E8F5E9' : (isPast ? '#f8f9fa' : '#fff');
+      return `<td style="padding:2px 4px;background:${bg};"><input type="number" data-line="${l.id}" data-month="${m}" value="${val||''}" style="width:72px;border:1px solid #eee;border-radius:4px;padding:3px 5px;font-size:11px;text-align:right;" oninput="markScheduleDirty(this)"></td>`;
+    }).join('');
+    const lineTotal = months.reduce((s,m)=>s+(Number((fcMap[l.id+'|'+m]||{}).forecast_amount)||0), 0);
+    return `<tr>
+      <td style="padding:4px 6px;font-size:11px;font-weight:700;color:#1B3A5C;white-space:nowrap;">${l.schedule_name}<div style="font-size:10px;color:#888;font-weight:400;">${[l.channel,l.region].filter(Boolean).join(' · ')}</div></td>
+      ${cells}
+      <td class="amount" style="padding:4px 6px;font-size:11px;font-weight:700;">${fmtK(lineTotal)}</td>
+      <td style="padding:4px 6px;"><button class="btn-danger" style="font-size:10px;padding:2px 6px;" onclick="deleteScheduleLine('${l.id}','${deal.id}')">×</button></td>
+    </tr>`;
+  }).join('');
+  const grandTotal = colTotals.reduce((s,v)=>s+v, 0);
+  const totalsRow = `<tr style="background:#f8f9fa;"><td style="padding:4px 6px;font-size:11px;font-weight:700;">Total</td>${colTotals.map(v=>`<td class="amount" style="padding:4px 6px;font-size:11px;font-weight:700;">${fmtK(v)}</td>`).join('')}<td class="amount" style="padding:4px 6px;font-size:12px;font-weight:800;color:#1B3A5C;">${fmtK(grandTotal)}</td><td></td></tr>`;
+  const matchWarn = Math.abs(grandTotal - (Number(deal.amount)||0)) > 1
+    ? `<div style="background:#FFEBEE;border-left:4px solid #F44336;padding:6px 10px;margin:6px 0;font-size:11px;color:#B71C1C;">Schedule total ${fmt(grandTotal)} doesn't match deal amount ${fmt(deal.amount)} (variance ${fmt(grandTotal-(Number(deal.amount)||0))})</div>` : '';
+  return `<div class="detail-section"><h3>Revenue Schedule</h3>
+    ${matchWarn}
+    <div style="overflow-x:auto;background:#fff;border:1px solid #e0e0e0;border-radius:8px;">
+      <table style="font-size:11px;width:auto;min-width:100%;">
+        <thead><tr><th style="text-align:left;padding:4px 6px;background:#1B3A5C;">Line</th>${monthHead}<th style="text-align:right;padding:4px 6px;background:#1B3A5C;">Total</th><th style="background:#1B3A5C;"></th></tr></thead>
+        <tbody>${rows}${lines.length?totalsRow:''}</tbody>
+      </table>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">
+      <button class="btn-secondary" style="font-size:11px;padding:6px 12px;" onclick="addScheduleLine('${deal.id}')">+ Add Line</button>
+      <button class="btn-secondary" style="font-size:11px;padding:6px 12px;" onclick="autoDistributeSchedule('${deal.id}')">Auto-distribute Deal Amount</button>
+      <button class="btn-primary" style="font-size:11px;padding:6px 12px;" onclick="saveScheduleAmounts('${deal.id}')">Save Amounts</button>
+    </div>
+  </div>`;
+}
+
+function markScheduleDirty(input) { input.dataset.dirty = '1'; }
+
+async function addScheduleLine(dealId) {
+  const name = prompt('Schedule line name (e.g., SET BRAZIL):');
+  if (!name) return;
+  const channel = prompt('Channel (optional):') || null;
+  const region = prompt('Region (optional):') || null;
+  const { error } = await sb.from('schedule_lines').insert({ opportunity_id: dealId, schedule_name: name, channel, region });
+  if (error) { showToast('Error: '+error.message,'error'); return; }
+  showToast('Line added');
+  await loadAllData(); showDetail(dealId);
+}
+
+async function deleteScheduleLine(id, dealId) {
+  if (!confirm('Delete this schedule line and all its forecast amounts?')) return;
+  const { error } = await sb.from('schedule_lines').delete().eq('id', id);
+  if (error) { showToast('Error: '+error.message,'error'); return; }
+  showToast('Line removed');
+  await loadAllData(); showDetail(dealId);
+}
+
+async function saveScheduleAmounts(dealId) {
+  const inputs = document.querySelectorAll('input[data-line][data-month]');
+  const upserts = [];
+  inputs.forEach(inp => {
+    const lineId = inp.dataset.line;
+    const month = inp.dataset.month;
+    const val = parseFloat(inp.value)||0;
+    upserts.push({ opportunity_id: dealId, schedule_line_id: lineId, month, forecast_amount: val });
+  });
+  // Delete existing entries for this deal that are tied to schedule lines, then re-insert
+  await sb.from('forecast_entries').delete().eq('opportunity_id', dealId).not('schedule_line_id', 'is', null);
+  if (upserts.length > 0) {
+    const { error } = await sb.from('forecast_entries').insert(upserts.filter(u => u.forecast_amount > 0));
+    if (error) { showToast('Save failed: '+error.message,'error'); return; }
+  }
+  showToast('Schedule saved');
+  await loadAllData(); showDetail(dealId);
+}
+
+async function autoDistributeSchedule(dealId) {
+  const deal = DEALS.find(d => d.id === dealId);
+  if (!deal) return;
+  const lines = SCHEDULE_LINES.filter(l => l.opportunity_id === dealId);
+  const months = buildMonthRange(deal.fiscal_start, deal.fiscal_end);
+  if (lines.length === 0 || months.length === 0) { showToast('Need lines and a flight range','error'); return; }
+  const total = Number(deal.amount)||0;
+  const perCell = Math.round(total / (lines.length * months.length));
+  document.querySelectorAll('input[data-line][data-month]').forEach(inp => {
+    inp.value = perCell;
+    inp.dataset.dirty = '1';
+  });
+  showToast('Auto-distributed — click Save Amounts to persist');
 }
 
 // ===================================================================
